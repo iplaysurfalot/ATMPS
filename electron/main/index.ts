@@ -31,7 +31,8 @@ function createWindow(): void {
     backgroundColor: '#111318',
     show: false,
     webPreferences: {
-      preload: join(__dirname, '../preload/index.mjs'),
+      // CJS preload required: sandboxed preload has no ESM loader.
+      preload: join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -39,12 +40,22 @@ function createWindow(): void {
     }
   })
 
+  mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    console.error('[atmps] did-fail-load', { code, desc, url })
+  })
+  mainWindow.webContents.on('preload-error', (_e, path, err) => {
+    console.error('[atmps] preload-error', path, err)
+  })
+
   mainWindow.on('ready-to-show', () => mainWindow?.show())
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    const htmlPath = join(__dirname, '../renderer/index.html')
+    void mainWindow.loadFile(htmlPath).catch((err) => {
+      console.error('[atmps] loadFile failed', htmlPath, err)
+    })
   }
 }
 

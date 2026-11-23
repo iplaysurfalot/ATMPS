@@ -14,13 +14,15 @@ Offline by design: no accounts, no cloud sync. Documents use a normalized model 
 
 ```powershell
 cd C:\Users\BM\source\repos\ATMPS
-npm install
+npm.cmd install
 ```
+
+> PowerShell tip: if `npm` fails or hangs as a script, use `npm.cmd` (e.g. `npm.cmd install`, `npm.cmd run dist`).
 
 ## Development
 
 ```powershell
-npm run dev
+npm.cmd run dev
 ```
 
 This starts Vite + Electron. The app window opens automatically.
@@ -49,15 +51,33 @@ Covers document model, undo/redo history, and `.atmps` project pack/unpack (incl
 ## Production build
 
 ```powershell
-npm run build
+npm.cmd run build
 ```
 
 Outputs Electron main/preload/renderer bundles under `out/`.
 
+### Packaged Windows app (release)
+
+Build an NSIS installer and a portable `.exe` into `dist/`:
+
+```powershell
+npm.cmd run dist
+```
+
+Unpackaged app directory only (faster smoke check):
+
+```powershell
+npm.cmd run pack
+```
+
+**Run the built app:** double-click `dist\ATMPS-0.1.0-portable.exe`, or install via `dist\ATMPS-0.1.0-win-x64.exe`, or launch `dist\win-unpacked\ATMPS.exe` after `pack`/`dist`.
+
+Builds are unsigned (`signAndEditExecutable` is off so packaging works without Windows symlink privileges). Windows SmartScreen may warn on first launch — choose “More info” → “Run anyway” when testing locally.
+
 Typecheck:
 
 ```powershell
-npm run typecheck
+npm.cmd run typecheck
 ```
 
 ## Architecture (M1)

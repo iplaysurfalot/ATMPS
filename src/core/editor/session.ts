@@ -70,6 +70,8 @@ export class EditorSession {
   private zoom = 1
   private status = 'Ready'
   private listeners = new Set<EditorListener>()
+  /** Cached for useSyncExternalStore — must be referentially stable until emit(). */
+  private cachedSnapshot: EditorSnapshot | null = null
 
   subscribe(listener: EditorListener): () => void {
     this.listeners.add(listener)
@@ -77,24 +79,28 @@ export class EditorSession {
   }
 
   private emit(): void {
+    this.cachedSnapshot = null
     for (const l of this.listeners) l()
   }
 
   getSnapshot(): EditorSnapshot {
-    return {
-      document: this.history ? cloneDocument(this.history.document) : null,
-      assets: [...this.assets],
-      assetUrls: { ...this.assetUrls },
-      filePath: this.filePath,
-      dirty: this.dirty,
-      tool: this.tool,
-      brushSize: this.brushSize,
-      brushColor: this.brushColor,
-      zoom: this.zoom,
-      canUndo: this.history?.canUndo ?? false,
-      canRedo: this.history?.canRedo ?? false,
-      status: this.status
+    if (!this.cachedSnapshot) {
+      this.cachedSnapshot = {
+        document: this.history ? cloneDocument(this.history.document) : null,
+        assets: [...this.assets],
+        assetUrls: { ...this.assetUrls },
+        filePath: this.filePath,
+        dirty: this.dirty,
+        tool: this.tool,
+        brushSize: this.brushSize,
+        brushColor: this.brushColor,
+        zoom: this.zoom,
+        canUndo: this.history?.canUndo ?? false,
+        canRedo: this.history?.canRedo ?? false,
+        status: this.status
+      }
     }
+    return this.cachedSnapshot
   }
 
   getDocument(): AtmpsDocument | null {

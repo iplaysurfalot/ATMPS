@@ -14,11 +14,17 @@ export default defineConfig({
     }
   },
   preload: {
+    // Sandboxed preloads cannot use ESM `import` — must be a single CJS bundle.
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'electron/preload/index.ts')
+        },
+        output: {
+          format: 'cjs',
+          entryFileNames: '[name].cjs',
+          inlineDynamicImports: true
         }
       }
     }
