@@ -2,7 +2,7 @@
 
 Local-first desktop image editor built with **Electron**, **React**, **TypeScript**, **Vite**, and **Fabric.js**.
 
-Offline by design: no accounts, no cloud sync. Documents use a normalized model as the source of truth; Fabric is a rendering/view layer. Original imported assets are stored without destructive recompression inside `.atmps` project packages.
+Offline by design: no accounts, no cloud sync. The UI follows a Photoshop-style desktop workflow (menu bar, tool rail, options bar, layers/properties panels, document tabs, status bar). Documents use a normalized model as the source of truth; Fabric is a rendering/view layer. Original imported assets are stored without destructive recompression inside `.atmps` project packages.
 
 ## Requirements (Windows)
 
@@ -36,14 +36,20 @@ This starts Vite + Electron. The app window opens automatically.
 | Save | `Ctrl+S` |
 | Save As | `Ctrl+Shift+S` |
 | Undo / Redo | `Ctrl+Z` / `Ctrl+Y` or `Ctrl+Shift+Z` |
-| Zoom | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` |
-| Tools | `V` select, `H` pan, `B` brush, `E` eraser, `T` text, `R` rect, `O` ellipse |
-| Temporary pan | Hold `Space` |
+| Deselect | `Ctrl+D` |
+| Select All | `Ctrl+A` |
+| Toggle rulers | `Ctrl+R` |
+| Zoom in / out | `Ctrl+=` / `Ctrl+-` |
+| Fit on screen | `Ctrl+0` |
+| Actual pixels (100%) | `Ctrl+1` |
+| Zoom toward cursor | `Ctrl+scroll` |
+| Temporary Hand | Hold `Space` |
+| Tools | `V` Move, `M` Marquee, `B` Brush, `E` Eraser, `T` Type, `U` Rectangle, `O` Ellipse, `H` Hand, `Z` Zoom |
 
 ## Tests
 
 ```powershell
-npm test
+npm.cmd test
 ```
 
 Covers document model, undo/redo history, and `.atmps` project pack/unpack (including original asset byte preservation).
@@ -80,17 +86,17 @@ Typecheck:
 npm.cmd run typecheck
 ```
 
-## Architecture (M1)
+## Architecture
 
 | Area | Location |
 |------|----------|
 | Normalized document model | `src/core/document/` |
 | Undo/redo history | `src/core/history/` |
 | Project pack/unpack (ZIP `.atmps`) | `src/core/file/` |
-| Editor session (assets + dirty state) | `src/core/editor/` |
+| Multi-document editor session | `src/core/editor/` |
 | Fabric render bridge | `src/core/rendering/` |
 | Secure FS/IPC | `electron/main/`, `electron/preload/` |
-| UI shell | `src/renderer/` |
+| Photoshop-like UI shell | `src/renderer/` |
 
 Pointer-move transforms update Fabric objects directly and only commit into the document/history on mouse-up, keeping React out of the hot path.
 
@@ -99,17 +105,21 @@ Pointer-move transforms update Fabric objects directly and only commit into the 
 `.atmps` is a ZIP containing:
 
 - `manifest.json`
-- `document.json` — normalized layers/transforms/properties
+- `document.json` — normalized layers/transforms/properties (incl. blend modes)
 - `assets.json` — asset metadata
 - `assets/<id>.(png|jpg|webp)` — **original** imported bytes
 
-## Vertical slice
+## Core workflow
 
-1. Create document (configurable size)
-2. Import PNG/JPG/WebP
-3. Transform layers (move/resize/rotate)
-4. Edit layers (add/remove/duplicate/rename/reorder/hide)
-5. Text, shapes, brush, eraser
-6. Zoom/pan, undo/redo
+1. Create document (presets / custom size / transparent or solid background)
+2. Import PNG/JPG/WebP as layers (originals preserved)
+3. Transform layers (move/resize/rotate) with PS-like handles
+4. Edit layers (add/remove/duplicate/rename/drag-reorder/hide/lock/opacity/blend)
+5. Text, shapes, brush, eraser (eraser punches real transparency on raster)
+6. Marquee selection, zoom/pan, rulers, multi-document tabs
 7. Save/reopen `.atmps`
 8. Export flattened PNG/JPG
+
+## Still short of Photoshop
+
+ATMPS aims for familiar **look and core desktop workflow**, not feature parity. Missing or partial vs Photoshop: advanced selection (lasso/magic wand), layer masks/groups/effects, adjustment layers, filters, pen/path tools, smart objects, CMYK/16-bit, full blend-mode set (only Normal/Multiply/Screen are live), pressure-sensitive brushes, history panel UI, and non-destructive type/shape editing after rasterize.

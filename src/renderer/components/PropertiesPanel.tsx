@@ -4,56 +4,29 @@ import type { EditorSession } from '@core/editor/session'
 interface Props {
   document: AtmpsDocument
   session: EditorSession
-  brushSize: number
-  brushColor: string
   tool: string
 }
 
-export function PropertiesPanel({ document, session, brushSize, brushColor, tool }: Props) {
+export function PropertiesPanel({ document, session, tool }: Props) {
   const layer = document.layers.find((l) => l.id === document.activeLayerId) ?? null
 
   return (
-    <div className="panel">
+    <div className="panel properties-panel">
       <div className="panel-header">Properties</div>
       <div className="panel-body">
-        {(tool === 'brush' || tool === 'eraser') && (
-          <>
-            <div className="props-row">
-              <label>Brush size</label>
-              <input
-                type="range"
-                min={1}
-                max={120}
-                value={brushSize}
-                onChange={(e) => session.setBrushSize(Number(e.target.value))}
-              />
-            </div>
-            {tool === 'brush' && (
-              <div className="props-row">
-                <label>Color</label>
-                <input
-                  type="color"
-                  value={brushColor}
-                  onChange={(e) => session.setBrushColor(e.target.value)}
-                />
-              </div>
-            )}
-          </>
+        {!layer && (
+          <div className="props-empty">
+            <div className="props-empty-title">No selection</div>
+            <div>Select a layer or use the {tool} tool.</div>
+          </div>
         )}
-
-        {!layer && <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Select a layer</div>}
 
         {layer && (
           <>
+            <div className="props-section-title">{layer.name}</div>
             <div className="props-row">
-              <label>Opacity</label>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={Math.round(layer.opacity * 100)}
-                onChange={(e) => session.setOpacity(layer.id, Number(e.target.value) / 100)}
-              />
+              <label>Kind</label>
+              <span className="props-static">{layer.kind}</span>
             </div>
             <div className="props-row">
               <label>X</label>
@@ -76,7 +49,37 @@ export function PropertiesPanel({ document, session, brushSize, brushColor, tool
               />
             </div>
             <div className="props-row">
-              <label>Rotation</label>
+              <label>W%</label>
+              <input
+                type="number"
+                step={1}
+                value={Math.round(layer.transform.scaleX * 100)}
+                onChange={(e) =>
+                  session.applyTransform(
+                    layer.id,
+                    { scaleX: Number(e.target.value) / 100 },
+                    'Scale'
+                  )
+                }
+              />
+            </div>
+            <div className="props-row">
+              <label>H%</label>
+              <input
+                type="number"
+                step={1}
+                value={Math.round(layer.transform.scaleY * 100)}
+                onChange={(e) =>
+                  session.applyTransform(
+                    layer.id,
+                    { scaleY: Number(e.target.value) / 100 },
+                    'Scale'
+                  )
+                }
+              />
+            </div>
+            <div className="props-row">
+              <label>Angle</label>
               <input
                 type="number"
                 value={Math.round(layer.transform.rotation)}
@@ -85,6 +88,14 @@ export function PropertiesPanel({ document, session, brushSize, brushColor, tool
                 }
               />
             </div>
+            {(layer.kind === 'text' || layer.kind === 'shape') && (
+              <div className="props-row">
+                <label />
+                <button type="button" onClick={() => void session.rasterizeLayer(layer.id)}>
+                  Rasterize Layer
+                </button>
+              </div>
+            )}
             {layer.kind === 'text' && <TextProps layer={layer} session={session} />}
             {layer.kind === 'shape' && <ShapeProps layer={layer} session={session} />}
           </>
@@ -103,6 +114,7 @@ function TextProps({
 }) {
   return (
     <>
+      <div className="props-section-title">Character</div>
       <div className="props-row">
         <label>Text</label>
         <input
@@ -131,6 +143,22 @@ function TextProps({
           onChange={(e) => session.patchLayer(layer.id, { fill: e.target.value }, 'Text color')}
         />
       </div>
+      <div className="props-row">
+        <label>Weight</label>
+        <select
+          value={layer.fontWeight}
+          onChange={(e) =>
+            session.patchLayer(
+              layer.id,
+              { fontWeight: e.target.value as 'normal' | 'bold' },
+              'Font weight'
+            )
+          }
+        >
+          <option value="normal">Regular</option>
+          <option value="bold">Bold</option>
+        </select>
+      </div>
     </>
   )
 }
@@ -143,13 +171,38 @@ function ShapeProps({
   session: EditorSession
 }) {
   return (
-    <div className="props-row">
-      <label>Fill</label>
-      <input
-        type="color"
-        value={layer.fill}
-        onChange={(e) => session.patchLayer(layer.id, { fill: e.target.value }, 'Shape fill')}
-      />
-    </div>
+    <>
+      <div className="props-section-title">Shape</div>
+      <div className="props-row">
+        <label>Fill</label>
+        <input
+          type="color"
+          value={layer.fill}
+          onChange={(e) => session.patchLayer(layer.id, { fill: e.target.value }, 'Shape fill')}
+        />
+      </div>
+      <div className="props-row">
+        <label>W</label>
+        <input
+          type="number"
+          min={1}
+          value={layer.width}
+          onChange={(e) =>
+            session.patchLayer(layer.id, { width: Number(e.target.value) }, 'Shape size')
+          }
+        />
+      </div>
+      <div className="props-row">
+        <label>H</label>
+        <input
+          type="number"
+          min={1}
+          value={layer.height}
+          onChange={(e) =>
+            session.patchLayer(layer.id, { height: Number(e.target.value) }, 'Shape size')
+          }
+        />
+      </div>
+    </>
   )
 }

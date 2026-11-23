@@ -1,15 +1,19 @@
 /** Shared types between main and renderer. Document model is source of truth. */
 
 export type ToolId =
-  | 'select'
-  | 'pan'
+  | 'move'
+  | 'marquee'
   | 'brush'
   | 'eraser'
   | 'text'
   | 'rect'
   | 'ellipse'
+  | 'hand'
+  | 'zoom'
 
 export type LayerKind = 'image' | 'shape' | 'text' | 'raster'
+
+export type BlendMode = 'normal' | 'multiply' | 'screen'
 
 export interface Transform2D {
   x: number
@@ -26,6 +30,7 @@ export interface LayerBase {
   visible: boolean
   locked: boolean
   opacity: number
+  blendMode: BlendMode
   transform: Transform2D
 }
 
@@ -125,6 +130,22 @@ export interface ExportOptions {
   quality?: number
 }
 
+export interface DocumentTabInfo {
+  id: string
+  name: string
+  dirty: boolean
+  width: number
+  height: number
+  filePath: string | null
+}
+
+export interface MarqueeSelection {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 export interface IpcApi {
   pickOpenImages: () => Promise<string[] | null>
   pickSaveProject: (defaultName: string) => Promise<string | null>
@@ -147,3 +168,17 @@ export interface SerializedProjectPackage {
 
 export const ATMPS_MIME = 'application/x-atmps'
 export const ATMPS_EXTENSION = '.atmps'
+
+export const BLEND_MODES: BlendMode[] = ['normal', 'multiply', 'screen']
+
+export const TOOL_TIPS: Record<ToolId, string> = {
+  move: 'Move tool (V)',
+  marquee: 'Rectangular Marquee (M)',
+  brush: 'Brush Tool (B)',
+  eraser: 'Eraser Tool (E)',
+  text: 'Horizontal Type Tool (T)',
+  rect: 'Rectangle Tool (U)',
+  ellipse: 'Ellipse Tool (O)',
+  hand: 'Hand Tool (H)',
+  zoom: 'Zoom Tool (Z)'
+}

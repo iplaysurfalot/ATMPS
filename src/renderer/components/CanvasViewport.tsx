@@ -7,9 +7,17 @@ interface Props {
   session: EditorSession
   snapshot: EditorSnapshot
   controllerRef: React.MutableRefObject<FabricController | null>
+  onRequestNew: () => void
+  onRequestOpen: () => void
 }
 
-export function CanvasViewport({ session, snapshot, controllerRef }: Props) {
+export function CanvasViewport({
+  session,
+  snapshot,
+  controllerRef,
+  onRequestNew,
+  onRequestOpen
+}: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const lastDocId = useRef<string | null>(null)
@@ -41,8 +49,21 @@ export function CanvasViewport({ session, snapshot, controllerRef }: Props) {
   useEffect(() => {
     const controller = controllerRef.current
     if (!controller) return
-    controller.setTool(snapshot.tool, snapshot.brushSize, snapshot.brushColor)
-  }, [snapshot.tool, snapshot.brushSize, snapshot.brushColor, controllerRef])
+    controller.setTool(
+      snapshot.tool,
+      snapshot.brushSize,
+      snapshot.brushColor,
+      snapshot.brushOpacity,
+      snapshot.brushHardness
+    )
+  }, [
+    snapshot.tool,
+    snapshot.brushSize,
+    snapshot.brushColor,
+    snapshot.brushOpacity,
+    snapshot.brushHardness,
+    controllerRef
+  ])
 
   useEffect(() => {
     const controller = controllerRef.current
@@ -60,28 +81,92 @@ export function CanvasViewport({ session, snapshot, controllerRef }: Props) {
       updatedAt: doc.updatedAt,
       active: doc.activeLayerId,
       layers: doc.layers,
-      urls: snapshot.assetUrls
+      urls: snapshot.assetUrls,
+      selection: snapshot.selection
     })
 
-    // Always sync on new document; skip identical signatures.
     if (doc.id === lastDocId.current && sig === lastSig.current) return
+    const isNewDoc = doc.id !== lastDocId.current
     lastDocId.current = doc.id
     lastSig.current = sig
-    void controller.syncFromDocument(doc, snapshot.assetUrls)
-  }, [snapshot.document, snapshot.assetUrls, controllerRef])
+    void controller.syncFromDocument(doc, snapshot.assetUrls).then(() => {
+      if (isNewDoc) {
+        const z = controller.zoomToFit(doc.width, doc.height)
+        session.setZoom(z)
+      }
+    })
+  }, [snapshot.document, snapshot.assetUrls, snapshot.selection, controllerRef, session])
+
+  const ruler = snapshot.showRulers && snapshot.document
 
   return (
-    <div className="canvas-host" ref={hostRef}>
-      <canvas ref={canvasRef} />
-      {!snapshot.document && (
-        <div className="empty-state">
-          <div>
-            <strong>ATMPS</strong>
-            Create a document or open a project to begin.
-            <div style={{ marginTop: 8, fontSize: 12 }}>Ctrl+N · Ctrl+O · Ctrl+S</div>
+    <div className={`canvas-stage${ruler ? ' with-rulers' : ''}`}>
+      {ruler && (
+        <>
+          <div className="ruler-corner" />
+          <div className="ruler ruler-h" aria-hidden>
+            <RulerMarks length={snapshot.document!.width} zoom={snapshot.zoom} horizontal />
           </div>
-        </div>
+          <div className="ruler ruler-v" aria-hidden>
+            <RulerMarks length={snapshot.document!.height} zoom={snapshot.zoom} horizontal={false} />
+          </div>
+        </>
       )}
+      <div className="canvas-host" ref={hostRef}>
+        <canvas ref={canvasRef} />
+        {!snapshot.document && (
+          <div className="empty-state">
+            <div className="empty-card">
+              <div className="empty-logo">ATMPS</div>
+              <h1>Create something</h1>
+              <p>Local-first image editor. No accounts. Your files stay on this machine.</p>
+              <div className="empty-actions">
+                <button type="button" className="primary" onClick={onRequestNew}>
+                  New Document
+                </button>
+                <button type="button" onClick={onRequestOpen}>
+                  Open Project
+                </button>
+              </div>
+              <div className="empty-keys">
+                <kbd>Ctrl</kbd>+<kbd>N</kbd> New · <kbd>Ctrl</kbd>+<kbd>O</kbd> Open ·{' '}
+                <kbd>Ctrl</kbd>+<kbd>S</kbd> Save
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function RulerMarks({
+  length,
+  zoom,
+  horizontal
+}: {
+  length: number
+  zoom: number
+  horizontal: boolean
+}) {
+  const step = zoom >= 2 ? 50 : zoom >= 1 ? 100 : 200
+  const marks: number[] = []
+  for (let i = 0; i <= length; i += step) marks.push(i)
+  return (
+    <div className={`ruler-marks${horizontal ? ' h' : ' v'}`}>
+      {marks.map((m) => (
+        <span
+          key={m}
+          className="ruler-tick"
+          style={
+            horizontal
+              ? { left: `${m * zoom}px` }
+              : { top: `${m * zoom}px` }
+          }
+        >
+          {m}
+        </span>
+      ))}
     </div>
   )
 }

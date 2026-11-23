@@ -28,7 +28,7 @@ function createWindow(): void {
     height: 900,
     minWidth: 1024,
     minHeight: 680,
-    backgroundColor: '#111318',
+    backgroundColor: '#1e1e1e',
     show: false,
     webPreferences: {
       // CJS preload required: sandboxed preload has no ESM loader.
