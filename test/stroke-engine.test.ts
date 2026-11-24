@@ -1,7 +1,6 @@
 import { describe, expect, it, beforeAll } from 'vitest'
 import { dabSpacing } from '../src/core/rendering/stroke-engine'
 import { EditorSession } from '../src/core/editor/session'
-import { createRasterLayer } from '../src/core/document/model'
 
 beforeAll(() => {
   if (typeof URL.createObjectURL !== 'function') {
@@ -21,22 +20,18 @@ describe('stroke engine', () => {
 })
 
 describe('paint target rules', () => {
+  it('seeds a blank layer on new document', () => {
+    const session = new EditorSession()
+    session.createNew({ name: 'Seed', width: 32, height: 32 })
+    expect(session.getDocument()?.layers).toHaveLength(1)
+    expect(session.getDocument()?.activeLayerId).toBeTruthy()
+  })
+
   it('refuses locked layers instead of spawning a sibling', async () => {
     const session = new EditorSession()
     session.createNew({ name: 'Lock', width: 32, height: 32 })
-    const layer = createRasterLayer({
-      name: 'Paint',
-      assetId: 'asset_locked',
-      width: 32,
-      height: 32
-    })
-    session.commitRasterStroke({
-      layer,
-      isNewLayer: true,
-      bytes: new Uint8Array([1, 2, 3, 4]),
-      label: 'Brush stroke'
-    })
-    session.toggleLock(layer.id)
+    const layerId = session.getDocument()!.activeLayerId!
+    session.toggleLock(layerId)
     const target = await session.prepareRasterStrokeTarget()
     expect(target).toBeNull()
     expect(session.getDocument()?.layers).toHaveLength(1)
@@ -45,18 +40,7 @@ describe('paint target rules', () => {
   it('Delete without selection does not remove the layer', async () => {
     const session = new EditorSession()
     session.createNew({ name: 'Del', width: 16, height: 16 })
-    const layer = createRasterLayer({
-      name: 'Keep',
-      assetId: 'asset_keep',
-      width: 16,
-      height: 16
-    })
-    session.commitRasterStroke({
-      layer,
-      isNewLayer: true,
-      bytes: new Uint8Array([9, 9, 9, 9]),
-      label: 'Brush stroke'
-    })
+    expect(session.getDocument()?.layers).toHaveLength(1)
     await session.deleteSelectionOrLayer()
     expect(session.getDocument()?.layers).toHaveLength(1)
   })

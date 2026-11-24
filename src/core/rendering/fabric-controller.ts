@@ -105,6 +105,8 @@ export class FabricController {
     lastStamped: { x: number; y: number } | null
     clip: SelectionClip | null
     sourceUrl: string | null
+    previewObj: FabricImage | null
+    raf: number
   } | null = null
   private selectionFloat: {
     imageData: ImageData
@@ -1360,6 +1362,11 @@ export class FabricController {
 
     // Map doc point → layer bitmap space (inverse of layer transform).
     const local = docToLayerPoint(docPt, layer)
+    // Prefer updating an existing FabricImage in place for live preview.
+    const existing = this.canvas
+      .getObjects()
+      .find((o) => o.get(LAYER_ID_KEY) === layer.id) as FabricImage | undefined
+
     this.activeStroke = {
       overlay,
       overlayCtx,
@@ -1381,7 +1388,9 @@ export class FabricController {
             }))
           }
         : null,
-      sourceUrl: target.sourceUrl
+      sourceUrl: target.sourceUrl,
+      previewObj: existing ?? null,
+      raf: 0
     }
     this.activeStroke.lastStamped = stampSegment(
       overlayCtx,
@@ -1391,7 +1400,7 @@ export class FabricController {
       this.activeStroke.clip,
       null
     )
-    await this.refreshStrokePreview()
+    this.scheduleStrokePreview()
   }
 
   private continueStroke(docPt: { x: number; y: number }): void {
@@ -1407,10 +1416,21 @@ export class FabricController {
       stroke.clip,
       stroke.lastStamped
     )
-    void this.refreshStrokePreview()
+    this.scheduleStrokePreview()
   }
 
-  private async refreshStrokePreview(): Promise<void> {
+  /** Coalesce live previews to one RAF — never encode PNG while dragging. */
+  private scheduleStrokePreview(): void {
+    const stroke = this.activeStroke
+    if (!stroke || stroke.raf) return
+    stroke.raf = requestAnimationFrame(() => {
+      if (!this.activeStroke) return
+      this.activeStroke.raf = 0
+      this.paintStrokePreviewFrame()
+    })
+  }
+
+  private paintStrokePreviewFrame(): void {
     const stroke = this.activeStroke
     if (!stroke) return
     renderStrokePreview(
@@ -1420,14 +1440,51 @@ export class FabricController {
       stroke.params.opacity,
       stroke.params.eraser
     )
-    const url = stroke.preview.toDataURL('image/png')
-    await this.upsertRasterLayerImage(stroke.layer, url)
+
+    const layer = stroke.layer
+    const t = layer.transform
+    if (stroke.previewObj) {
+      stroke.previewObj.setElement(stroke.preview)
+      stroke.previewObj.set({
+        left: t.x,
+        top: t.y,
+        scaleX: (layer.width / (stroke.preview.width || layer.width || 1)) * t.scaleX,
+        scaleY: (layer.height / (stroke.preview.height || layer.height || 1)) * t.scaleY,
+        angle: t.rotation,
+        opacity: layer.opacity
+      })
+      stroke.previewObj.setCoords()
+      stroke.previewObj.dirty = true
+    } else {
+      const img = new FabricImage(stroke.preview, {
+        left: t.x,
+        top: t.y,
+        scaleX: t.scaleX,
+        scaleY: t.scaleY,
+        angle: t.rotation,
+        originX: 'left',
+        originY: 'top',
+        opacity: layer.opacity,
+        selectable: false,
+        evented: false
+      })
+      img.set(LAYER_ID_KEY, layer.id)
+      this.canvas.add(img)
+      stroke.previewObj = img
+    }
     if (this.brushCursor) this.canvas.bringObjectToFront(this.brushCursor)
+    this.canvas.requestRenderAll()
   }
 
   private async endStroke(): Promise<void> {
     const stroke = this.activeStroke
     if (!stroke) return
+    if (stroke.raf) {
+      cancelAnimationFrame(stroke.raf)
+      stroke.raf = 0
+    }
+    // Final preview frame so bake matches what the user saw.
+    this.paintStrokePreviewFrame()
     this.activeStroke = null
 
     const w = stroke.layer.width

@@ -1,9 +1,7 @@
 import { describe, expect, it, beforeAll } from 'vitest'
 import { EditorSession } from '../src/core/editor/session'
-import { createRasterLayer } from '../src/core/document/model'
 
 beforeAll(() => {
-  // Node test env: session creates blob URLs for assets
   if (typeof URL.createObjectURL !== 'function') {
     let n = 0
     URL.createObjectURL = () => `blob:test-${++n}`
@@ -18,12 +16,9 @@ describe('raster stroke history', () => {
     const session = new EditorSession()
     session.createNew({ name: 'Paint', width: 64, height: 64 })
 
-    const layer = createRasterLayer({
-      name: 'Layer',
-      assetId: 'asset_stroke_test',
-      width: 64,
-      height: 64
-    })
+    const layer = session.getDocument()!.layers.find((l) => l.kind === 'raster')
+    expect(layer?.kind).toBe('raster')
+    if (!layer || layer.kind !== 'raster') throw new Error('expected raster')
 
     const stroke1 = new Uint8Array([1, 1, 1, 1])
     const stroke2 = new Uint8Array([2, 2, 2, 2])
@@ -31,7 +26,7 @@ describe('raster stroke history', () => {
 
     session.commitRasterStroke({
       layer,
-      isNewLayer: true,
+      isNewLayer: false,
       bytes: stroke1,
       label: 'Brush stroke'
     })
@@ -53,17 +48,15 @@ describe('raster stroke history', () => {
 
     session.undo()
     expect(session.getDocument()?.layers).toHaveLength(1)
-    // Access private bytes via package round-trip fields is awkward; re-stroke
-    // path is covered by canUndo stack depth + layer retention above.
     expect(session.getSnapshot().canUndo).toBe(true)
     expect(session.getSnapshot().canRedo).toBe(true)
 
     session.undo()
     expect(session.getDocument()?.layers).toHaveLength(1)
 
-    // Third undo removes the layer created by the first stroke
+    // Third undo restores pre-first-stroke pixels; layer remains (seeded at create)
     session.undo()
-    expect(session.getDocument()?.layers).toHaveLength(0)
+    expect(session.getDocument()?.layers).toHaveLength(1)
     expect(session.getSnapshot().canUndo).toBe(false)
 
     session.redo()

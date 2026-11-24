@@ -75,6 +75,41 @@ export function App() {
   const controllerRef = useRef<FabricController | null>(null)
   const [newOpen, setNewOpen] = useState(false)
 
+  // CDP / QA debug hooks (read-only probes + in-memory project round-trip).
+  useEffect(() => {
+    const probe = () => {
+      const doc = session.getDocument()
+      const snap = session.getSnapshot()
+      return {
+        tool: snap.tool,
+        brushSize: snap.brushSize,
+        layers: doc?.layers.length ?? 0,
+        activeLayerId: doc?.activeLayerId ?? null,
+        selection: snap.selection,
+        canUndo: snap.canUndo,
+        canRedo: snap.canRedo,
+        historyPast: snap.historyPanel.past.length,
+        status: snap.status,
+        strokeActive: controllerRef.current?.isStrokeActive() ?? false
+      }
+    }
+    const roundTrip = () => {
+      const before = session.getDocument()?.layers.length ?? 0
+      if (!session.getDocument()) return { ok: false, reason: 'no document' }
+      const pkg = session.toSerializedPackage()
+      const id = session.getDocument()?.id
+      if (id) session.closeDocument(id)
+      session.loadSerializedPackage(pkg, null)
+      const after = session.getDocument()?.layers.length ?? 0
+      return { ok: after === before && after >= 1, layersBefore: before, layersAfter: after }
+    }
+    const api = Object.assign(probe, { roundTrip })
+    ;(window as unknown as { __atmpsDebug: typeof api }).__atmpsDebug = api
+    return () => {
+      delete (window as unknown as { __atmpsDebug?: unknown }).__atmpsDebug
+    }
+  }, [session])
+
   const importImages = useCallback(async () => {
     if (!snapshot.document) {
       session.setStatus('Create or open a document first')
@@ -670,7 +705,9 @@ export function App() {
       <NewDocumentDialog
         open={newOpen}
         onClose={() => setNewOpen(false)}
-        onCreate={(opts) => session.createNew(opts)}
+        onCreate={(opts) => {
+          session.createNew(opts)
+        }}
       />
     </div>
   )

@@ -299,14 +299,39 @@ export class EditorSession {
     }
   }
 
+  /**
+   * Create a document with one blank paintable layer (Photoshop-like).
+   * Initial asset is a 1×1 transparent PNG; paint/load paths stretch to layer size.
+   */
   createNew(options: CreateDocumentOptions): AtmpsDocument {
-    const doc = createDocument(options)
+    let doc = createDocument(options)
+    const assetId = createId('asset')
+    const empty = transparentPng1x1()
+    const layer = createRasterLayer({
+      name: 'Layer 1',
+      assetId,
+      width: doc.width,
+      height: doc.height
+    })
+    doc = {
+      ...doc,
+      layers: [layer],
+      activeLayerId: layer.id
+    }
+    const url = URL.createObjectURL(bytesToBlob(empty, 'image/png'))
     const state: OpenDocumentState = {
       id: doc.id,
       history: new HistoryStack(doc),
-      assets: [],
-      assetBytes: {},
-      assetUrls: {},
+      assets: [
+        createAssetRecord({
+          id: assetId,
+          name: 'Layer 1',
+          mimeType: 'image/png',
+          byteLength: empty.byteLength
+        })
+      ],
+      assetBytes: { [assetId]: empty },
+      assetUrls: { [assetId]: url },
       filePath: null,
       dirty: false
     }
@@ -1092,8 +1117,25 @@ export class EditorSession {
   }
 }
 
+/**
+ * 1×1 truly transparent PNG (RGBA). Do NOT use the common “mP8/x8A” 1×1 —
+ * Chromium decodes that asset as opaque white, which flooded every paint bake.
+ */
+export function transparentPng1x1(): Uint8Array {
+  const b64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAAXNSR0IArs4c6QAAAAtJREFUGFdjYAACAAAFAAGq1chRAAAAAElFTkSuQmCC'
+  if (typeof atob === 'function') {
+    const binary = atob(b64)
+    const out = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i)
+    return out
+  }
+  return Uint8Array.from(Buffer.from(b64, 'base64'))
+}
+
 /** Full-size transparent PNG for paint layers. */
 export async function blankPngBytes(width: number, height: number): Promise<Uint8Array> {
+  if (typeof document === 'undefined') return transparentPng1x1()
   const canvas = document.createElement('canvas')
   canvas.width = Math.max(1, width)
   canvas.height = Math.max(1, height)
@@ -1102,15 +1144,7 @@ export async function blankPngBytes(width: number, height: number): Promise<Uint
   const blob = await new Promise<Blob | null>((resolve) =>
     canvas.toBlob((b) => resolve(b), 'image/png')
   )
-  if (!blob) {
-    // 1x1 transparent fallback
-    const b64 =
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5W2fQAAAAASUVORK5CYII='
-    const binary = atob(b64)
-    const out = new Uint8Array(binary.length)
-    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i)
-    return out
-  }
+  if (!blob) return transparentPng1x1()
   return new Uint8Array(await blob.arrayBuffer())
 }
 
