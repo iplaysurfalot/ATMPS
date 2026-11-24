@@ -21,7 +21,7 @@ import {
   updateLayer,
   updateLayerTransform
 } from '../document/model'
-import { HistoryStack } from '../history/history-stack'
+import { HistoryStack, type AssetByteDelta } from '../history/history-stack'
 import {
   buildProjectPackage,
   deserializePackage,
@@ -35,12 +35,23 @@ import type {
   BlendMode,
   CreateDocumentOptions,
   DocumentTabInfo,
+  HistoryPanelState,
+  ImageLayer,
   Layer,
   MarqueeSelection,
+  RasterLayer,
   SerializedProjectPackage,
   ToolId,
   Transform2D
 } from '@shared/types'
+import {
+  clearRectInImageData,
+  cropImageData,
+  imageDataToPng,
+  loadImageData
+} from '../rendering/raster-ops'
+
+type PaintLayer = RasterLayer | ImageLayer
 
 export type EditorListener = () => void
 
@@ -67,12 +78,15 @@ export interface EditorSnapshot {
   brushSize: number
   brushHardness: number
   brushOpacity: number
+  brushFlow: number
   brushColor: string
+  fillTolerance: number
   zoom: number
   showRulers: boolean
   selection: MarqueeSelection | null
   canUndo: boolean
   canRedo: boolean
+  historyPanel: HistoryPanelState
   status: string
   toolTip: string
 }
@@ -80,8 +94,15 @@ export interface EditorSnapshot {
 const TOOL_STATUS: Record<ToolId, string> = {
   move: 'Move Tool',
   marquee: 'Rectangular Marquee Tool',
+  lasso: 'Lasso Tool',
+  polylasso: 'Polygonal Lasso Tool',
+  crop: 'Crop Tool',
   brush: 'Brush Tool',
   eraser: 'Eraser Tool',
+  eyedropper: 'Eyedropper Tool',
+  bucket: 'Paint Bucket Tool',
+  gradient: 'Gradient Tool',
+  clone: 'Clone Stamp Tool',
   text: 'Type Tool',
   rect: 'Rectangle Tool',
   ellipse: 'Ellipse Tool',
@@ -101,7 +122,9 @@ export class EditorSession {
   private brushSize = 20
   private brushHardness = 100
   private brushOpacity = 100
+  private brushFlow = 100
   private brushColor = '#000000'
+  private fillTolerance = 32
   private zoom = 1
   private showRulers = true
   private selection: MarqueeSelection | null = null
@@ -149,12 +172,19 @@ export class EditorSession {
         brushSize: this.brushSize,
         brushHardness: this.brushHardness,
         brushOpacity: this.brushOpacity,
+        brushFlow: this.brushFlow,
         brushColor: this.brushColor,
+        fillTolerance: this.fillTolerance,
         zoom: this.zoom,
         showRulers: this.showRulers,
         selection: this.selection ? { ...this.selection } : null,
         canUndo: active?.history.canUndo ?? false,
         canRedo: active?.history.canRedo ?? false,
+        historyPanel: active?.history.getHistoryLabels() ?? {
+          past: [],
+          current: 'No document',
+          future: []
+        },
         status: this.status,
         toolTip: TOOL_STATUS[this.tool]
       }
@@ -210,8 +240,23 @@ export class EditorSession {
     this.emit()
   }
 
+  setBrushFlow(flow: number): void {
+    this.brushFlow = Math.min(100, Math.max(1, flow))
+    this.emit()
+  }
+
+  /** Photoshop-like brush size nudge (`[`/`]` or `{`/`}`). */
+  nudgeBrushSize(delta: number): void {
+    this.setBrushSize(this.brushSize + delta)
+  }
+
   setBrushColor(color: string): void {
     this.brushColor = color
+    this.emit()
+  }
+
+  setFillTolerance(tolerance: number): void {
+    this.fillTolerance = Math.min(255, Math.max(0, Math.round(tolerance)))
     this.emit()
   }
 
@@ -233,6 +278,25 @@ export class EditorSession {
   clearSelection(): void {
     this.selection = null
     this.emit()
+  }
+
+  /**
+   * Photoshop-like Delete:
+   * - With an active marquee/lasso → clear those pixels on the active raster/image layer
+   * - Otherwise delete the selected (active) layer
+   */
+  async deleteSelectionOrLayer(): Promise<void> {
+    const active = this.active()
+    if (!active) return
+    const doc = active.history.document
+    if (this.selection && this.selection.width > 0 && this.selection.height > 0) {
+      await this.clearSelectionPixels()
+      return
+    }
+    if (doc.activeLayerId) {
+      this.deleteLayer(doc.activeLayerId)
+      this.status = 'Deleted layer'
+    }
   }
 
   createNew(options: CreateDocumentOptions): AtmpsDocument {
@@ -313,19 +377,64 @@ export class EditorSession {
   undo(): void {
     const active = this.ensureActive()
     if (!active.history.canUndo) return
-    active.history.undo()
+    const snap = active.history.undo()
+    if (snap?.assets?.length) {
+      this.applyAssetDeltas(active, snap.assets, 'before')
+    }
     active.dirty = true
-    this.status = 'Undo'
+    this.status = snap?.label ? `Undo ${snap.label}` : 'Undo'
     this.emit()
   }
 
   redo(): void {
     const active = this.ensureActive()
     if (!active.history.canRedo) return
-    active.history.redo()
+    const snap = active.history.redo()
+    if (snap?.assets?.length) {
+      this.applyAssetDeltas(active, snap.assets, 'after')
+    }
     active.dirty = true
-    this.status = 'Redo'
+    this.status = snap?.label ? `Redo ${snap.label}` : 'Redo'
     this.emit()
+  }
+
+  /** Restore asset bytes for an undo (before) or redo (after) side. */
+  private applyAssetDeltas(
+    active: OpenDocumentState,
+    deltas: AssetByteDelta[],
+    side: 'before' | 'after'
+  ): void {
+    for (const delta of deltas) {
+      const bytes = side === 'before' ? delta.before : delta.after
+      const prevUrl = active.assetUrls[delta.assetId]
+      if (prevUrl?.startsWith('blob:')) URL.revokeObjectURL(prevUrl)
+
+      if (!bytes) {
+        delete active.assetBytes[delta.assetId]
+        delete active.assetUrls[delta.assetId]
+        active.assets = active.assets.filter((a) => a.id !== delta.assetId)
+        continue
+      }
+
+      active.assetBytes[delta.assetId] = new Uint8Array(bytes)
+      const existing = active.assets.find((a) => a.id === delta.assetId)
+      const mimeType = existing?.mimeType ?? 'image/png'
+      if (existing) {
+        active.assets = active.assets.map((a) =>
+          a.id === delta.assetId ? { ...a, byteLength: bytes.byteLength, mimeType } : a
+        )
+      } else {
+        active.assets.push(
+          createAssetRecord({
+            id: delta.assetId,
+            name: 'Layer',
+            mimeType,
+            byteLength: bytes.byteLength
+          })
+        )
+      }
+      active.assetUrls[delta.assetId] = URL.createObjectURL(bytesToBlob(bytes, mimeType))
+    }
   }
 
   addAssetFromBytes(params: {
@@ -392,19 +501,55 @@ export class EditorSession {
     this.setTool('move')
   }
 
-  async ensureRasterLayer(): Promise<string> {
+  /**
+   * Resolve paint target for a stroke. Existing unlocked raster is reused.
+   * Otherwise prepares a new raster layer that is NOT in the document yet —
+   * commitRasterStroke folds creation + pixels into one undo step.
+   */
+  async prepareRasterStrokeTarget(): Promise<{
+    layer: RasterLayer
+    isNewLayer: boolean
+    sourceUrl: string | null
+  }> {
     const active = this.ensureActive()
     const doc = active.history.document
     const current = doc.layers.find((l) => l.id === doc.activeLayerId)
-    if (current?.kind === 'raster' && !current.locked) return current.id
 
-    // Auto-rasterize text/shape when painting on them
+    if (current?.kind === 'raster' && !current.locked) {
+      return {
+        layer: current,
+        isNewLayer: false,
+        sourceUrl: active.assetUrls[current.assetId] ?? null
+      }
+    }
+
     if (current && (current.kind === 'text' || current.kind === 'shape') && !current.locked) {
       await this.rasterizeLayer(current.id)
       const after = this.getDocument()?.layers.find((l) => l.id === current.id)
-      if (after?.kind === 'raster') return after.id
+      if (after?.kind === 'raster') {
+        return {
+          layer: after,
+          isNewLayer: false,
+          sourceUrl: this.active()?.assetUrls[after.assetId] ?? null
+        }
+      }
     }
 
+    // Deferred new layer — registered only when the stroke commits.
+    const assetId = createId('asset')
+    const layer = createRasterLayer({
+      name: 'Layer',
+      assetId,
+      width: doc.width,
+      height: doc.height
+    })
+    return { layer, isNewLayer: true, sourceUrl: null }
+  }
+
+  /** Layers panel "+" — explicit new blank layer (its own undo step). */
+  async ensureRasterLayer(): Promise<string> {
+    const active = this.ensureActive()
+    const doc = active.history.document
     const empty = await blankPngBytes(doc.width, doc.height)
     const asset = this.addAssetFromBytes({
       name: 'Layer',
@@ -419,6 +564,271 @@ export class EditorSession {
     })
     this.commit('New layer', (d) => addLayer(d, layer))
     return layer.id
+  }
+
+  /**
+   * Commit one completed brush/eraser stroke as a single undoable edit.
+   * Caller should refresh Fabric in-place (no full canvas clear).
+   */
+  commitRasterStroke(params: {
+    layer: RasterLayer
+    isNewLayer: boolean
+    bytes: Uint8Array
+    label: string
+  }): { layerId: string; assetId: string; url: string } {
+    const active = this.ensureActive()
+    const assetId = params.layer.assetId
+    const afterBytes = new Uint8Array(params.bytes)
+    const prevBytes =
+      !params.isNewLayer && active.assetBytes[assetId]
+        ? new Uint8Array(active.assetBytes[assetId]!)
+        : null
+
+    const deltas: AssetByteDelta[] = [
+      {
+        assetId,
+        before: params.isNewLayer ? null : prevBytes,
+        after: afterBytes
+      }
+    ]
+
+    if (params.isNewLayer) {
+      // Register asset metadata + bytes as part of this commit
+      if (!active.assets.some((a) => a.id === assetId)) {
+        active.assets.push(
+          createAssetRecord({
+            id: assetId,
+            name: params.layer.name,
+            mimeType: 'image/png',
+            byteLength: afterBytes.byteLength
+          })
+        )
+      }
+      active.history.commit(params.label, (d) => addLayer(d, params.layer), { assets: deltas })
+    } else {
+      active.history.commit(params.label, (d) => d, { assets: deltas })
+    }
+
+    const prevUrl = active.assetUrls[assetId]
+    if (prevUrl?.startsWith('blob:')) URL.revokeObjectURL(prevUrl)
+    active.assetBytes[assetId] = afterBytes
+    active.assets = active.assets.map((a) =>
+      a.id === assetId ? { ...a, byteLength: afterBytes.byteLength, mimeType: 'image/png' } : a
+    )
+    if (!active.assets.some((a) => a.id === assetId)) {
+      active.assets.push(
+        createAssetRecord({
+          id: assetId,
+          name: params.layer.name,
+          mimeType: 'image/png',
+          byteLength: afterBytes.byteLength
+        })
+      )
+    }
+    const url = URL.createObjectURL(bytesToBlob(afterBytes, 'image/png'))
+    active.assetUrls[assetId] = url
+    active.dirty = true
+    this.status = params.label
+    this.emit()
+    return { layerId: params.layer.id, assetId, url }
+  }
+
+  /**
+   * Generic raster pixel edit on the active paint target (raster or image).
+   * One undo step with asset deltas.
+   */
+  async applyRasterPixelEdit(
+    label: string,
+    mutate: (data: ImageData, layer: PaintLayer) => void | Promise<void>
+  ): Promise<{ layerId: string; url: string } | null> {
+    const prepared = await this.ensurePaintTargetLayer()
+    if (!prepared) return null
+    const { layer, url: sourceUrl, isNewLayer } = prepared
+    const width = layer.kind === 'image' ? layer.naturalWidth : layer.width
+    const height = layer.kind === 'image' ? layer.naturalHeight : layer.height
+    const data = sourceUrl
+      ? await loadImageData(sourceUrl, width, height)
+      : new ImageData(width, height)
+    await mutate(data, layer)
+    const bytes = await imageDataToPng(data)
+
+    // Normalize image layers to raster for destructive pixel edits
+    if (layer.kind === 'image') {
+      const raster = createRasterLayer({
+        name: layer.name,
+        assetId: layer.assetId,
+        width: layer.naturalWidth,
+        height: layer.naturalHeight
+      })
+      raster.id = layer.id
+      raster.visible = layer.visible
+      raster.locked = layer.locked
+      raster.opacity = layer.opacity
+      raster.blendMode = layer.blendMode
+      raster.transform = { ...layer.transform }
+      const active = this.ensureActive()
+      const afterBytes = new Uint8Array(bytes)
+      const prevBytes = active.assetBytes[layer.assetId]
+        ? new Uint8Array(active.assetBytes[layer.assetId]!)
+        : null
+      const deltas: AssetByteDelta[] = [
+        { assetId: layer.assetId, before: prevBytes, after: afterBytes }
+      ]
+      active.history.commit(label, (d) => ({
+        ...d,
+        layers: d.layers.map((l) => (l.id === layer.id ? { ...raster } : l)),
+        updatedAt: new Date().toISOString()
+      }), { assets: deltas })
+      const prevUrl = active.assetUrls[layer.assetId]
+      if (prevUrl?.startsWith('blob:')) URL.revokeObjectURL(prevUrl)
+      active.assetBytes[layer.assetId] = afterBytes
+      active.assets = active.assets.map((a) =>
+        a.id === layer.assetId ? { ...a, byteLength: afterBytes.byteLength, mimeType: 'image/png' } : a
+      )
+      const newUrl = URL.createObjectURL(bytesToBlob(afterBytes, 'image/png'))
+      active.assetUrls[layer.assetId] = newUrl
+      active.dirty = true
+      this.status = label
+      this.emit()
+      return { layerId: layer.id, url: newUrl }
+    }
+
+    const committed = this.commitRasterStroke({
+      layer: layer as RasterLayer,
+      isNewLayer,
+      bytes,
+      label
+    })
+    return { layerId: committed.layerId, url: committed.url }
+  }
+
+  async clearSelectionPixels(): Promise<void> {
+    const sel = this.selection
+    if (!sel || sel.width <= 0 || sel.height <= 0) return
+    const result = await this.applyRasterPixelEdit('Clear selection', (data) => {
+      clearRectInImageData(data, sel, sel.points)
+    })
+    if (result) this.status = 'Cleared selection'
+  }
+
+  /** Ensure active layer can receive pixels; returns paint target info. */
+  async ensurePaintTargetLayer(): Promise<{
+    layer: PaintLayer
+    url: string | null
+    isNewLayer: boolean
+  } | null> {
+    const active = this.active()
+    if (!active) return null
+    const doc = active.history.document
+    const current = doc.layers.find((l) => l.id === doc.activeLayerId)
+    if (current?.kind === 'raster' && !current.locked) {
+      return {
+        layer: current,
+        url: active.assetUrls[current.assetId] ?? null,
+        isNewLayer: false
+      }
+    }
+    if (current?.kind === 'image' && !current.locked) {
+      return {
+        layer: current,
+        url: active.assetUrls[current.assetId] ?? null,
+        isNewLayer: false
+      }
+    }
+    if (current && (current.kind === 'text' || current.kind === 'shape') && !current.locked) {
+      await this.rasterizeLayer(current.id)
+      const after = this.getDocument()?.layers.find((l) => l.id === current.id)
+      if (after?.kind === 'raster') {
+        return {
+          layer: after,
+          url: this.active()?.assetUrls[after.assetId] ?? null,
+          isNewLayer: false
+        }
+      }
+    }
+    const target = await this.prepareRasterStrokeTarget()
+    return {
+      layer: target.layer,
+      url: target.sourceUrl,
+      isNewLayer: target.isNewLayer
+    }
+  }
+
+  async cropToRect(rect: MarqueeSelection): Promise<void> {
+    const active = this.ensureActive()
+    const doc = active.history.document
+    const x = Math.max(0, Math.floor(rect.x))
+    const y = Math.max(0, Math.floor(rect.y))
+    const width = Math.max(1, Math.min(doc.width - x, Math.ceil(rect.width)))
+    const height = Math.max(1, Math.min(doc.height - y, Math.ceil(rect.height)))
+    if (width >= doc.width && height >= doc.height && x === 0 && y === 0) return
+
+    const deltas: AssetByteDelta[] = []
+    const newUrls: Record<string, string> = {}
+    const newBytes: Record<string, Uint8Array> = {}
+
+    for (const layer of doc.layers) {
+      if (layer.kind !== 'raster' && layer.kind !== 'image') continue
+      const url = active.assetUrls[layer.assetId]
+      if (!url) continue
+      const lw = layer.kind === 'image' ? layer.naturalWidth : layer.width
+      const lh = layer.kind === 'image' ? layer.naturalHeight : layer.height
+      // Layers are typically full-canvas for raster; for image, crop in document space
+      // relative to layer transform — simplified: crop document window from layer pixels
+      // when layer is origin-aligned full size; otherwise shift transform.
+      if (layer.kind === 'raster' && layer.width === doc.width && layer.height === doc.height) {
+        const data = await loadImageData(url, lw, lh)
+        const cropped = cropImageData(data, { x, y, width, height })
+        const bytes = await imageDataToPng(cropped)
+        const prev = active.assetBytes[layer.assetId]
+          ? new Uint8Array(active.assetBytes[layer.assetId]!)
+          : null
+        deltas.push({ assetId: layer.assetId, before: prev, after: bytes })
+        newBytes[layer.assetId] = bytes
+        newUrls[layer.assetId] = URL.createObjectURL(bytesToBlob(bytes, 'image/png'))
+      }
+    }
+
+    active.history.commit(
+      'Crop',
+      (d) => ({
+        ...d,
+        width,
+        height,
+        layers: d.layers.map((l) => {
+          if (l.kind === 'raster' && l.width === d.width && l.height === d.height) {
+            return { ...l, width, height, transform: { ...l.transform, x: 0, y: 0 } }
+          }
+          if (l.kind === 'image' || l.kind === 'raster' || l.kind === 'shape' || l.kind === 'text') {
+            return {
+              ...l,
+              transform: {
+                ...l.transform,
+                x: l.transform.x - x,
+                y: l.transform.y - y
+              }
+            }
+          }
+          return l
+        }),
+        updatedAt: new Date().toISOString()
+      }),
+      { assets: deltas }
+    )
+
+    for (const [assetId, bytes] of Object.entries(newBytes)) {
+      const prevUrl = active.assetUrls[assetId]
+      if (prevUrl?.startsWith('blob:')) URL.revokeObjectURL(prevUrl)
+      active.assetBytes[assetId] = bytes
+      active.assetUrls[assetId] = newUrls[assetId]!
+      active.assets = active.assets.map((a) =>
+        a.id === assetId ? { ...a, byteLength: bytes.byteLength, mimeType: 'image/png' } : a
+      )
+    }
+    this.selection = null
+    active.dirty = true
+    this.status = `Cropped to ${width}×${height}`
+    this.emit()
   }
 
   async rasterizeLayer(layerId: string): Promise<void> {

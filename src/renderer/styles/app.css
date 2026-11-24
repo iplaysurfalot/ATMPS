@@ -247,6 +247,22 @@ button.primary:hover:not(:disabled) {
   text-overflow: ellipsis;
 }
 
+.options-hint-inline {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.options-btn {
+  background: var(--bg-elevated);
+  border: 1px solid #1a1a1a;
+  padding: 3px 10px;
+  font-size: 11px;
+}
+
+.options-btn:hover:not(:disabled) {
+  background: var(--accent-dim);
+}
+
 /* ——— Workspace ——— */
 .workspace {
   display: grid;
@@ -434,10 +450,54 @@ button.primary:hover:not(:disabled) {
 
 .right-panel {
   display: grid;
-  grid-template-rows: 1.2fr 0.8fr;
+  grid-template-rows: 1.1fr 0.7fr 0.8fr;
   min-height: 0;
   background: var(--bg-panel);
   border-left: 1px solid var(--border);
+}
+
+.history-list {
+  padding: 4px 0;
+}
+
+.history-empty {
+  color: var(--text-muted);
+  padding: 10px 12px;
+  font-size: 11px;
+}
+
+.history-item {
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-left: 2px solid transparent;
+}
+
+.history-item.past {
+  color: var(--text);
+}
+
+.history-item.current {
+  color: #fff;
+  background: var(--accent-dim);
+  border-left-color: var(--accent);
+}
+
+.history-item.future {
+  opacity: 0.55;
+}
+
+.options-btn {
+  margin-left: 8px;
+  padding: 2px 8px;
+  background: #333;
+  border: 1px solid #111;
+}
+
+.options-hint-inline {
+  color: var(--text-muted);
+  font-size: 10px;
+  margin-left: 4px;
 }
 
 .panel {
@@ -468,6 +528,45 @@ button.primary:hover:not(:disabled) {
 .panel-header-actions button {
   padding: 2px 6px;
   font-size: 12px;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 100%;
+  overflow: auto;
+  padding: 4px 0;
+}
+
+.history-item {
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-left: 2px solid transparent;
+}
+
+.history-item.past {
+  color: #8a8a8a;
+}
+
+.history-item.current {
+  color: var(--text);
+  background: var(--accent-dim);
+  border-left-color: var(--accent);
+  font-weight: 600;
+}
+
+.history-item.future {
+  color: #666;
+  opacity: 0.7;
+}
+
+.history-empty {
+  padding: 10px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .panel-body {

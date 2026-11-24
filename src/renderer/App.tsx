@@ -7,13 +7,21 @@ import { PropertiesPanel } from './components/PropertiesPanel'
 import { CanvasViewport } from './components/CanvasViewport'
 import { MenuBar, type MenuDef } from './components/MenuBar'
 import { ToolOptionsBar } from './components/ToolOptionsBar'
+import { HistoryPanel } from './components/HistoryPanel'
 import {
   IconBrush,
+  IconBucket,
+  IconClone,
+  IconCrop,
   IconEllipse,
   IconEraser,
+  IconEyedropper,
+  IconGradient,
   IconHand,
+  IconLasso,
   IconMarquee,
   IconMove,
+  IconPolyLasso,
   IconRect,
   IconText,
   IconZoom
@@ -25,8 +33,15 @@ import { bytesToBlob } from '@core/bytes'
 const TOOLS: { id: ToolId; tip: string; icon: React.ReactNode }[] = [
   { id: 'move', tip: TOOL_TIPS.move, icon: <IconMove /> },
   { id: 'marquee', tip: TOOL_TIPS.marquee, icon: <IconMarquee /> },
+  { id: 'lasso', tip: TOOL_TIPS.lasso, icon: <IconLasso /> },
+  { id: 'polylasso', tip: TOOL_TIPS.polylasso, icon: <IconPolyLasso /> },
+  { id: 'crop', tip: TOOL_TIPS.crop, icon: <IconCrop /> },
+  { id: 'eyedropper', tip: TOOL_TIPS.eyedropper, icon: <IconEyedropper /> },
   { id: 'brush', tip: TOOL_TIPS.brush, icon: <IconBrush /> },
   { id: 'eraser', tip: TOOL_TIPS.eraser, icon: <IconEraser /> },
+  { id: 'clone', tip: TOOL_TIPS.clone, icon: <IconClone /> },
+  { id: 'bucket', tip: TOOL_TIPS.bucket, icon: <IconBucket /> },
+  { id: 'gradient', tip: TOOL_TIPS.gradient, icon: <IconGradient /> },
   { id: 'text', tip: TOOL_TIPS.text, icon: <IconText /> },
   { id: 'rect', tip: TOOL_TIPS.rect, icon: <IconRect /> },
   { id: 'ellipse', tip: TOOL_TIPS.ellipse, icon: <IconEllipse /> },
@@ -241,9 +256,17 @@ export function App() {
           {
             id: 'redo',
             label: 'Redo',
-            shortcut: 'Ctrl+Y',
+            shortcut: 'Ctrl+Shift+Z',
             disabled: !snapshot.canRedo,
             onClick: () => session.redo()
+          },
+          { id: 'sep-e', label: '', separator: true },
+          {
+            id: 'clear',
+            label: 'Clear / Delete',
+            shortcut: 'Delete',
+            disabled: !snapshot.document,
+            onClick: () => void session.deleteSelectionOrLayer()
           }
         ]
       },
@@ -449,12 +472,42 @@ export function App() {
       } else if (meta && e.key === '1') {
         e.preventDefault()
         actualPixels()
+      } else if (!meta && !typing && (e.key === 'Delete' || e.key === 'Backspace')) {
+        e.preventDefault()
+        void session.deleteSelectionOrLayer()
+      } else if (!meta && !typing && e.key === 'Enter' && snapshot.tool === 'crop') {
+        e.preventDefault()
+        void controllerRef.current?.applyPendingCrop()
+      } else if (!meta && !typing && e.key === 'Escape') {
+        session.clearSelection()
+      } else if (!meta && !typing && (e.key === '[' || e.key === '{')) {
+        e.preventDefault()
+        // Photoshop: [ smaller, { much smaller — we map both brackets; Shift+[ = {
+        const step = e.key === '{' || e.shiftKey ? -20 : -5
+        session.nudgeBrushSize(step)
+      } else if (!meta && !typing && (e.key === ']' || e.key === '}')) {
+        e.preventDefault()
+        const step = e.key === '}' || e.shiftKey ? 20 : 5
+        session.nudgeBrushSize(step)
       } else if (!meta && !typing) {
+        if (e.key.toLowerCase() === 'g' && e.shiftKey) {
+          onTool('gradient')
+          return
+        }
+        if (e.key.toLowerCase() === 'l' && e.shiftKey) {
+          onTool('polylasso')
+          return
+        }
         const map: Record<string, ToolId> = {
           v: 'move',
           m: 'marquee',
+          l: 'lasso',
+          c: 'crop',
           b: 'brush',
           e: 'eraser',
+          s: 'clone',
+          i: 'eyedropper',
+          g: 'bucket',
           t: 'text',
           u: 'rect',
           o: 'ellipse',
@@ -489,13 +542,18 @@ export function App() {
     session,
     snapshot.document,
     snapshot.showRulers,
+    snapshot.tool,
     snapshot.zoom
   ])
 
   return (
     <div className="app-shell">
       <MenuBar menus={menus} />
-      <ToolOptionsBar session={session} snapshot={snapshot} />
+      <ToolOptionsBar
+        session={session}
+        snapshot={snapshot}
+        onApplyCrop={() => void controllerRef.current?.applyPendingCrop()}
+      />
 
       <div className="workspace">
         <aside className="tools-rail" aria-label="Tools">
@@ -565,6 +623,7 @@ export function App() {
                 session={session}
                 assetUrls={snapshot.assetUrls}
               />
+              <HistoryPanel session={session} snapshot={snapshot} />
               <PropertiesPanel document={snapshot.document} session={session} tool={snapshot.tool} />
             </>
           ) : (

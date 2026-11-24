@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import type { AtmpsDocument, BlendMode, Layer } from '@shared/types'
-import { BLEND_MODES } from '@shared/types'
+import { BLEND_MODE_LABELS, BLEND_MODES } from '@shared/types'
 import type { EditorSession } from '@core/editor/session'
 import { IconEye, IconLock } from './icons'
 
@@ -71,7 +71,7 @@ export function LayersPanel({ document, session, assetUrls }: Props) {
           >
             {BLEND_MODES.map((m) => (
               <option key={m} value={m}>
-                {m.charAt(0).toUpperCase() + m.slice(1)}
+                {BLEND_MODE_LABELS[m]}
               </option>
             ))}
           </select>

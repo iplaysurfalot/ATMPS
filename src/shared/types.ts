@@ -3,8 +3,15 @@
 export type ToolId =
   | 'move'
   | 'marquee'
+  | 'lasso'
+  | 'polylasso'
+  | 'crop'
   | 'brush'
   | 'eraser'
+  | 'eyedropper'
+  | 'bucket'
+  | 'gradient'
+  | 'clone'
   | 'text'
   | 'rect'
   | 'ellipse'
@@ -13,7 +20,20 @@ export type ToolId =
 
 export type LayerKind = 'image' | 'shape' | 'text' | 'raster'
 
-export type BlendMode = 'normal' | 'multiply' | 'screen'
+/** Canvas 2D composite ops that map cleanly to Photoshop-like blends. */
+export type BlendMode =
+  | 'normal'
+  | 'multiply'
+  | 'screen'
+  | 'overlay'
+  | 'darken'
+  | 'lighten'
+  | 'color-dodge'
+  | 'color-burn'
+  | 'hard-light'
+  | 'soft-light'
+  | 'difference'
+  | 'exclusion'
 
 export interface Transform2D {
   x: number
@@ -144,6 +164,14 @@ export interface MarqueeSelection {
   y: number
   width: number
   height: number
+  /** Lasso polygon in document coords (optional). */
+  points?: { x: number; y: number }[]
+}
+
+export interface HistoryPanelState {
+  past: string[]
+  current: string
+  future: string[]
 }
 
 export interface IpcApi {
@@ -169,13 +197,48 @@ export interface SerializedProjectPackage {
 export const ATMPS_MIME = 'application/x-atmps'
 export const ATMPS_EXTENSION = '.atmps'
 
-export const BLEND_MODES: BlendMode[] = ['normal', 'multiply', 'screen']
+export const BLEND_MODES: BlendMode[] = [
+  'normal',
+  'multiply',
+  'screen',
+  'overlay',
+  'darken',
+  'lighten',
+  'color-dodge',
+  'color-burn',
+  'hard-light',
+  'soft-light',
+  'difference',
+  'exclusion'
+]
+
+export const BLEND_MODE_LABELS: Record<BlendMode, string> = {
+  normal: 'Normal',
+  multiply: 'Multiply',
+  screen: 'Screen',
+  overlay: 'Overlay',
+  darken: 'Darken',
+  lighten: 'Lighten',
+  'color-dodge': 'Color Dodge',
+  'color-burn': 'Color Burn',
+  'hard-light': 'Hard Light',
+  'soft-light': 'Soft Light',
+  difference: 'Difference',
+  exclusion: 'Exclusion'
+}
 
 export const TOOL_TIPS: Record<ToolId, string> = {
   move: 'Move tool (V)',
   marquee: 'Rectangular Marquee (M)',
+  lasso: 'Lasso Tool (L)',
+  polylasso: 'Polygonal Lasso (Shift+L)',
+  crop: 'Crop Tool (C)',
   brush: 'Brush Tool (B)',
   eraser: 'Eraser Tool (E)',
+  eyedropper: 'Eyedropper Tool (I)',
+  bucket: 'Paint Bucket Tool (G)',
+  gradient: 'Gradient Tool (G)',
+  clone: 'Clone Stamp Tool (S)',
   text: 'Horizontal Type Tool (T)',
   rect: 'Rectangle Tool (U)',
   ellipse: 'Ellipse Tool (O)',

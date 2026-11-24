@@ -79,6 +79,69 @@ export function IconZoom({ size = 18 }: IconProps) {
   )
 }
 
+export function IconLasso({ size = 18 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+      <path d="M8 6c4-3 10-1 10 4 0 4-3 5-5 7-1 1-1 2 0 3" strokeDasharray="3 2" />
+      <circle cx="12" cy="18" r="2" />
+    </svg>
+  )
+}
+
+export function IconCrop({ size = 18 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+      <path d="M6 3v15h15M3 6h15v15" />
+    </svg>
+  )
+}
+
+export function IconEyedropper({ size = 18 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+      <path d="M14 6l4 4M3 21l7-7 4 4-7 7H3v-4zM15 5l2-2 4 4-2 2" />
+    </svg>
+  )
+}
+
+export function IconBucket({ size = 18 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+      <path d="M4 11l7-7 9 9-7 7-9-9z" />
+      <path d="M7 14c0 3 2 5 5 6" />
+    </svg>
+  )
+}
+
+export function IconGradient({ size = 18 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+      <rect x="4" y="5" width="16" height="14" rx="1" />
+      <path d="M8 5v14M12 5v14M16 5v14" opacity="0.45" />
+    </svg>
+  )
+}
+
+export function IconPolyLasso({ size = 18 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+      <path d="M5 18L9 5l6 3 4 10-8 2z" strokeDasharray="3 2" />
+      <circle cx="9" cy="5" r="1.2" fill="currentColor" />
+      <circle cx="15" cy="8" r="1.2" fill="currentColor" />
+      <circle cx="19" cy="18" r="1.2" fill="currentColor" />
+    </svg>
+  )
+}
+
+export function IconClone({ size = 18 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+      <circle cx="9" cy="10" r="4" />
+      <circle cx="16" cy="14" r="4" strokeDasharray="2 2" />
+    </svg>
+  )
+}
+
 export function IconEye({ size = 14, open = true }: IconProps & { open?: boolean }) {
   if (!open) {
     return (

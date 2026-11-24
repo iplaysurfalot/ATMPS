@@ -21,7 +21,8 @@ export function CanvasViewport({
   const hostRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const lastDocId = useRef<string | null>(null)
-  const lastSig = useRef<string>('')
+  const lastStructureSig = useRef<string>('')
+  const lastUrlsSig = useRef<string>('')
 
   useEffect(() => {
     const canvasEl = canvasRef.current
@@ -54,7 +55,8 @@ export function CanvasViewport({
       snapshot.brushSize,
       snapshot.brushColor,
       snapshot.brushOpacity,
-      snapshot.brushHardness
+      snapshot.brushHardness,
+      snapshot.brushFlow
     )
   }, [
     snapshot.tool,
@@ -62,6 +64,7 @@ export function CanvasViewport({
     snapshot.brushColor,
     snapshot.brushOpacity,
     snapshot.brushHardness,
+    snapshot.brushFlow,
     controllerRef
   ])
 
@@ -76,19 +79,52 @@ export function CanvasViewport({
     const doc = snapshot.document
     if (!controller || !doc) return
 
-    const sig = JSON.stringify({
+    // Structure = layers/selection/doc identity. Asset URL changes alone must not
+    // force a full canvas.clear() (that caused paint flicker).
+    const structureSig = JSON.stringify({
       id: doc.id,
       updatedAt: doc.updatedAt,
       active: doc.activeLayerId,
-      layers: doc.layers,
-      urls: snapshot.assetUrls,
+      layers: doc.layers.map((l) => ({
+        id: l.id,
+        kind: l.kind,
+        name: l.name,
+        visible: l.visible,
+        locked: l.locked,
+        opacity: l.opacity,
+        blendMode: l.blendMode,
+        transform: l.transform,
+        // kind-specific non-pixel fields
+        ...(l.kind === 'shape'
+          ? { shape: l.shape, width: l.width, height: l.height, fill: l.fill }
+          : {}),
+        ...(l.kind === 'text'
+          ? { text: l.text, fontSize: l.fontSize, fill: l.fill, fontWeight: l.fontWeight }
+          : {}),
+        ...(l.kind === 'image' || l.kind === 'raster'
+          ? { assetId: l.kind === 'image' || l.kind === 'raster' ? l.assetId : undefined }
+          : {})
+      })),
       selection: snapshot.selection
     })
+    const urlsSig = JSON.stringify(snapshot.assetUrls)
 
-    if (doc.id === lastDocId.current && sig === lastSig.current) return
     const isNewDoc = doc.id !== lastDocId.current
+    const structureChanged = isNewDoc || structureSig !== lastStructureSig.current
+    const urlsChanged = urlsSig !== lastUrlsSig.current
+
+    if (!structureChanged && !urlsChanged) return
+
     lastDocId.current = doc.id
-    lastSig.current = sig
+    lastStructureSig.current = structureSig
+    lastUrlsSig.current = urlsSig
+
+    if (!structureChanged && urlsChanged) {
+      // Asset-only change (brush undo/redo, etc.) — patch images, do not clear canvas.
+      void controller.refreshAssetUrls(doc, snapshot.assetUrls)
+      return
+    }
+
     void controller.syncFromDocument(doc, snapshot.assetUrls).then(() => {
       if (isNewDoc) {
         const z = controller.zoomToFit(doc.width, doc.height)
