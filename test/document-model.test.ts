@@ -9,6 +9,8 @@ import {
   removeLayer,
   renameLayer,
   reorderLayer,
+  setLayerBlendMode,
+  setLayerLocked,
   setLayerVisibility
 } from '../src/core/document/model'
 
@@ -58,5 +60,16 @@ describe('document model', () => {
     expect(layer.kind).toBe('image')
     expect(layer.assetId).toBe('asset_1')
     expect(layer.naturalWidth).toBe(640)
+    expect(layer.blendMode).toBe('normal')
+  })
+
+  it('supports lock and blend mode updates', () => {
+    let doc = createDocument({ name: 'T', width: 100, height: 100 })
+    const layer = createShapeLayer({ name: 'A', shape: 'rect', width: 10, height: 10 })
+    doc = addLayer(doc, layer)
+    doc = setLayerLocked(doc, layer.id, true)
+    expect(doc.layers[0]?.locked).toBe(true)
+    doc = setLayerBlendMode(doc, layer.id, 'multiply')
+    expect(doc.layers[0]?.blendMode).toBe('multiply')
   })
 })

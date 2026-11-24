@@ -2,6 +2,7 @@ import { createId } from '../ids'
 import type {
   AssetRecord,
   AtmpsDocument,
+  BlendMode,
   CreateDocumentOptions,
   ImageLayer,
   Layer,
@@ -15,6 +16,16 @@ export function defaultTransform(x = 0, y = 0): Transform2D {
   return { x, y, scaleX: 1, scaleY: 1, rotation: 0 }
 }
 
+function withDefaults(layer: Layer): Layer {
+  return {
+    ...layer,
+    blendMode: layer.blendMode ?? 'normal',
+    locked: layer.locked ?? false,
+    visible: layer.visible ?? true,
+    opacity: layer.opacity ?? 1
+  }
+}
+
 export function createDocument(options: CreateDocumentOptions): AtmpsDocument {
   const now = new Date().toISOString()
   return {
@@ -23,7 +34,7 @@ export function createDocument(options: CreateDocumentOptions): AtmpsDocument {
     name: options.name.trim() || 'Untitled',
     width: Math.max(1, Math.floor(options.width)),
     height: Math.max(1, Math.floor(options.height)),
-    background: options.background ?? '#ffffff',
+    background: options.background ?? 'transparent',
     layers: [],
     activeLayerId: null,
     createdAt: now,
@@ -52,7 +63,7 @@ export function withLayers(doc: AtmpsDocument, layers: Layer[], activeLayerId?: 
 }
 
 export function addLayer(doc: AtmpsDocument, layer: Layer, setActive = true): AtmpsDocument {
-  return withLayers(doc, [...doc.layers, layer], setActive ? layer.id : doc.activeLayerId)
+  return withLayers(doc, [...doc.layers, withDefaults(layer)], setActive ? layer.id : doc.activeLayerId)
 }
 
 export function removeLayer(doc: AtmpsDocument, layerId: string): AtmpsDocument {
@@ -92,11 +103,25 @@ export function setLayerVisibility(doc: AtmpsDocument, layerId: string, visible:
   )
 }
 
+export function setLayerLocked(doc: AtmpsDocument, layerId: string, locked: boolean): AtmpsDocument {
+  return withLayers(
+    doc,
+    doc.layers.map((l) => (l.id === layerId ? { ...l, locked } : l))
+  )
+}
+
 export function setLayerOpacity(doc: AtmpsDocument, layerId: string, opacity: number): AtmpsDocument {
   const clamped = Math.min(1, Math.max(0, opacity))
   return withLayers(
     doc,
     doc.layers.map((l) => (l.id === layerId ? { ...l, opacity: clamped } : l))
+  )
+}
+
+export function setLayerBlendMode(doc: AtmpsDocument, layerId: string, blendMode: BlendMode): AtmpsDocument {
+  return withLayers(
+    doc,
+    doc.layers.map((l) => (l.id === layerId ? { ...l, blendMode } : l))
   )
 }
 
@@ -153,6 +178,7 @@ export function createImageLayer(params: {
     visible: true,
     locked: false,
     opacity: 1,
+    blendMode: 'normal',
     transform: defaultTransform(params.x ?? 0, params.y ?? 0),
     assetId: params.assetId,
     naturalWidth: params.naturalWidth,
@@ -176,11 +202,12 @@ export function createShapeLayer(params: {
     visible: true,
     locked: false,
     opacity: 1,
+    blendMode: 'normal',
     transform: defaultTransform(params.x ?? 40, params.y ?? 40),
     shape: params.shape,
     width: params.width,
     height: params.height,
-    fill: params.fill ?? '#4f8cff',
+    fill: params.fill ?? '#4693ec',
     stroke: '#1e293b',
     strokeWidth: 0
   }
@@ -199,10 +226,11 @@ export function createTextLayer(params: {
     visible: true,
     locked: false,
     opacity: 1,
+    blendMode: 'normal',
     transform: defaultTransform(params.x ?? 80, params.y ?? 80),
     text: params.text ?? 'Text',
     fontFamily: 'Segoe UI',
-    fontSize: 32,
+    fontSize: 48,
     fill: '#111827',
     fontWeight: 'normal'
   }
@@ -221,6 +249,7 @@ export function createRasterLayer(params: {
     visible: true,
     locked: false,
     opacity: 1,
+    blendMode: 'normal',
     transform: defaultTransform(0, 0),
     assetId: params.assetId,
     width: params.width,
@@ -251,4 +280,12 @@ export function mimeFromPath(filePath: string): AssetRecord['mimeType'] {
   if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg'
   if (lower.endsWith('.webp')) return 'image/webp'
   return 'image/png'
+}
+
+/** Normalize older documents missing blendMode. */
+export function normalizeDocument(doc: AtmpsDocument): AtmpsDocument {
+  return {
+    ...doc,
+    layers: doc.layers.map((l) => withDefaults(l))
+  }
 }

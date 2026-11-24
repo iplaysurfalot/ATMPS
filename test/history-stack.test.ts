@@ -46,4 +46,42 @@ describe('history stack', () => {
     expect(history.document.name).toBe('Preview')
     expect(history.canUndo).toBe(false)
   })
+
+  it('records asset-only commits so brush strokes can undo one at a time', () => {
+    const history = new HistoryStack(createDocument({ name: 'H', width: 10, height: 10 }))
+    const before = new Uint8Array([1, 2, 3])
+    const after = new Uint8Array([4, 5, 6])
+    const after2 = new Uint8Array([7, 8, 9])
+
+    history.commit('Brush stroke', (d) => d, {
+      assets: [{ assetId: 'a1', before, after }]
+    })
+    expect(history.canUndo).toBe(true)
+
+    history.commit('Brush stroke', (d) => d, {
+      assets: [{ assetId: 'a1', before: after, after: after2 }]
+    })
+    expect(history.canUndo).toBe(true)
+
+    const undone2 = history.undo()
+    expect(undone2?.label).toBe('Brush stroke')
+    expect(undone2?.assets?.[0]?.before).toEqual(after)
+    expect(undone2?.assets?.[0]?.after).toEqual(after2)
+
+    const undone1 = history.undo()
+    expect(undone1?.assets?.[0]?.before).toEqual(before)
+    expect(undone1?.assets?.[0]?.after).toEqual(after)
+
+    const redone = history.redo()
+    expect(redone?.assets?.[0]?.after).toEqual(after)
+  })
+
+  it('exposes history labels for the panel', () => {
+    const history = new HistoryStack(createDocument({ name: 'H', width: 10, height: 10 }))
+    const a = createShapeLayer({ name: 'A', shape: 'rect', width: 1, height: 1 })
+    history.commit('Add shape', (d) => addLayer(d, a))
+    const labels = history.getHistoryLabels()
+    expect(labels.past).toEqual(['Add shape'])
+    expect(labels.current).toBe('Current state')
+  })
 })

@@ -1,4 +1,5 @@
 import JSZip from 'jszip'
+import { normalizeDocument } from '../document/model'
 import type {
   AssetRecord,
   AtmpsDocument,
@@ -31,7 +32,7 @@ export function deserializePackage(serialized: SerializedProjectPackage): Projec
   }
   return {
     manifest: serialized.manifest,
-    document: serialized.document,
+    document: normalizeDocument(serialized.document),
     assets: serialized.assets,
     assetBytes
   }
@@ -108,7 +109,12 @@ export async function unpackProject(data: Uint8Array): Promise<ProjectPackage> {
     assetBytes[asset.id] = await file.async('uint8array')
   }
 
-  const pkg: ProjectPackage = { manifest, document, assets, assetBytes }
+  const pkg: ProjectPackage = {
+    manifest,
+    document: normalizeDocument(document),
+    assets,
+    assetBytes
+  }
   validatePackage(pkg)
   return pkg
 }
