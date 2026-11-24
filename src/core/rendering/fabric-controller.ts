@@ -205,25 +205,20 @@ export class FabricController {
       ;(this.canvas as Canvas & { __atmpsEraser?: boolean }).__atmpsEraser = false
       this.hideBrushCursor()
       this.canvas.selection = tool === 'move'
-      if (tool === 'clone') {
-        this.canvas.defaultCursor = 'none'
-        this.ensureBrushCursor(brushSize)
-      } else {
-        this.canvas.defaultCursor =
-          tool === 'hand'
-            ? 'grab'
-            : tool === 'zoom'
-              ? 'zoom-in'
-              : tool === 'marquee' ||
-                  tool === 'lasso' ||
-                  tool === 'polylasso' ||
-                  tool === 'crop' ||
-                  tool === 'eyedropper'
-                ? 'crosshair'
-                : tool === 'bucket' || tool === 'gradient'
-                  ? 'cell'
-                  : 'default'
-      }
+      this.canvas.defaultCursor =
+        tool === 'hand'
+          ? 'grab'
+          : tool === 'zoom'
+            ? 'zoom-in'
+            : tool === 'marquee' ||
+                tool === 'lasso' ||
+                tool === 'polylasso' ||
+                tool === 'crop' ||
+                tool === 'eyedropper'
+              ? 'crosshair'
+              : tool === 'bucket' || tool === 'gradient'
+                ? 'cell'
+                : 'default'
       this.canvas.forEachObject((obj) => {
         const id = obj.get(LAYER_ID_KEY) as string | undefined
         if (

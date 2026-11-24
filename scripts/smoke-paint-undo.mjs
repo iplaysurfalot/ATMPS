@@ -43,31 +43,46 @@ async function evaluate(expression) {
 }
 
 async function stroke(x0, y0, x1, y1) {
-  await send('Input.dispatchMouseEvent', {
-    type: 'mousePressed',
-    x: x0,
-    y: y0,
-    button: 'left',
-    clickCount: 1
-  })
-  const steps = 8
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps
-    await send('Input.dispatchMouseEvent', {
-      type: 'mouseMoved',
-      x: x0 + (x1 - x0) * t,
-      y: y0 + (y1 - y0) * t,
-      button: 'left'
-    })
-  }
-  await send('Input.dispatchMouseEvent', {
-    type: 'mouseReleased',
-    x: x1,
-    y: y1,
-    button: 'left',
-    clickCount: 1
-  })
-  await new Promise((r) => setTimeout(r, 200))
+  // Prefer DOM pointer events on Fabric's upper-canvas (CDP Input is flaky here).
+  await evaluate(`(() => {
+    const el =
+      document.querySelector('.canvas-host .upper-canvas') ||
+      document.querySelector('.canvas-host canvas');
+    if (!el) return false;
+    const fire = (type, x, y, buttons = 1) => {
+      el.dispatchEvent(new PointerEvent(type, {
+        bubbles: true, cancelable: true, view: window,
+        clientX: x, clientY: y, pointerId: 1, pointerType: 'mouse',
+        isPrimary: true, buttons, button: 0
+      }));
+      el.dispatchEvent(new MouseEvent(type.replace('pointer', 'mouse').replace('down','mousedown').replace('up','mouseup').replace('move','mousemove'), {
+        bubbles: true, cancelable: true, view: window,
+        clientX: x, clientY: y, buttons, button: 0
+      }));
+    };
+    // Map names carefully
+    const down = (x, y) => {
+      el.dispatchEvent(new PointerEvent('pointerdown', { bubbles:true, cancelable:true, clientX:x, clientY:y, pointerId:1, pointerType:'mouse', isPrimary:true, buttons:1, button:0 }));
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles:true, cancelable:true, clientX:x, clientY:y, buttons:1, button:0 }));
+    };
+    const move = (x, y) => {
+      el.dispatchEvent(new PointerEvent('pointermove', { bubbles:true, cancelable:true, clientX:x, clientY:y, pointerId:1, pointerType:'mouse', isPrimary:true, buttons:1, button:0 }));
+      el.dispatchEvent(new MouseEvent('mousemove', { bubbles:true, cancelable:true, clientX:x, clientY:y, buttons:1, button:0 }));
+    };
+    const up = (x, y) => {
+      el.dispatchEvent(new PointerEvent('pointerup', { bubbles:true, cancelable:true, clientX:x, clientY:y, pointerId:1, pointerType:'mouse', isPrimary:true, buttons:0, button:0 }));
+      el.dispatchEvent(new MouseEvent('mouseup', { bubbles:true, cancelable:true, clientX:x, clientY:y, buttons:0, button:0 }));
+    };
+    down(${x0}, ${y0});
+    const steps = 12;
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      move(${x0} + (${x1} - ${x0}) * t, ${y0} + (${y1} - ${y0}) * t);
+    }
+    up(${x1}, ${y1});
+    return true;
+  })()`)
+  await new Promise((r) => setTimeout(r, 250))
 }
 
 ws.addEventListener('open', async () => {
