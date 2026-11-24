@@ -446,7 +446,10 @@ export function App() {
         session.redo()
       } else if (meta && e.key.toLowerCase() === 'd') {
         e.preventDefault()
-        session.clearSelection()
+        void (async () => {
+          await controllerRef.current?.cancelSelectionFloat()
+          session.clearSelection()
+        })()
       } else if (meta && e.key.toLowerCase() === 'a' && !typing) {
         e.preventDefault()
         if (snapshot.document) {
@@ -479,7 +482,11 @@ export function App() {
         e.preventDefault()
         void controllerRef.current?.applyPendingCrop()
       } else if (!meta && !typing && e.key === 'Escape') {
-        session.clearSelection()
+        e.preventDefault()
+        void (async () => {
+          await controllerRef.current?.cancelSelectionFloat()
+          session.clearSelection()
+        })()
       } else if (!meta && !typing && (e.key === '[' || e.key === '{')) {
         e.preventDefault()
         // Photoshop: [ smaller, { much smaller — we map both brackets; Shift+[ = {
@@ -622,6 +629,7 @@ export function App() {
                 document={snapshot.document}
                 session={session}
                 assetUrls={snapshot.assetUrls}
+                controllerRef={controllerRef}
               />
               <HistoryPanel session={session} snapshot={snapshot} />
               <PropertiesPanel document={snapshot.document} session={session} tool={snapshot.tool} />

@@ -1,16 +1,18 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AtmpsDocument, BlendMode, Layer } from '@shared/types'
 import { BLEND_MODE_LABELS, BLEND_MODES } from '@shared/types'
 import type { EditorSession } from '@core/editor/session'
+import type { FabricController } from '@core/rendering/fabric-controller'
 import { IconEye, IconLock } from './icons'
 
 interface Props {
   document: AtmpsDocument
   session: EditorSession
   assetUrls: Record<string, string>
+  controllerRef?: React.MutableRefObject<FabricController | null>
 }
 
-export function LayersPanel({ document, session, assetUrls }: Props) {
+export function LayersPanel({ document, session, assetUrls, controllerRef }: Props) {
   // Top of list = top of stack visually (reverse draw order)
   const layers = [...document.layers].reverse()
   const [dragId, setDragId] = useState<string | null>(null)
@@ -18,6 +20,11 @@ export function LayersPanel({ document, session, assetUrls }: Props) {
   const dragOverId = useRef<string | null>(null)
 
   const active = document.layers.find((l) => l.id === document.activeLayerId) ?? null
+  const [liveOpacity, setLiveOpacity] = useState(active ? Math.round(active.opacity * 100) : 100)
+
+  useEffect(() => {
+    if (active) setLiveOpacity(Math.round(active.opacity * 100))
+  }, [active?.id, active?.opacity])
 
   const onDropReorder = (targetId: string) => {
     if (!dragId || dragId === targetId) return
@@ -81,10 +88,19 @@ export function LayersPanel({ document, session, assetUrls }: Props) {
               type="range"
               min={0}
               max={100}
-              value={Math.round(active.opacity * 100)}
-              onChange={(e) => session.setOpacity(active.id, Number(e.target.value) / 100)}
+              value={liveOpacity}
+              onInput={(e) => {
+                const v = Number((e.target as HTMLInputElement).value)
+                setLiveOpacity(v)
+                controllerRef?.current?.applyLayerVisuals(active.id, { opacity: v / 100 })
+              }}
+              onChange={(e) => {
+                const v = Number(e.target.value)
+                setLiveOpacity(v)
+                session.setOpacity(active.id, v / 100)
+              }}
             />
-            <span className="opacity-val">{Math.round(active.opacity * 100)}%</span>
+            <span className="opacity-val">{liveOpacity}%</span>
           </label>
         </div>
       )}

@@ -55,7 +55,7 @@ export function ToolOptionsBar({ session, snapshot, onApplyCrop }: Props) {
               value={snapshot.brushSize}
               onChange={(e) => session.setBrushSize(Number(e.target.value))}
             />
-            <span className="options-hint-inline">{`{`} / {`}`}</span>
+            <span className="options-hint-inline">[ ] {'{ }'}</span>
           </label>
           <label className="options-field">
             <span>Hardness</span>
@@ -149,10 +149,12 @@ export function ToolOptionsBar({ session, snapshot, onApplyCrop }: Props) {
       )}
 
       {tool === 'move' && (
-        <span className="options-hint">Drag to move · handles to scale/rotate · Esc clears selection</span>
+        <span className="options-hint">
+          Drag selection to move pixels · Esc cancels float / deselects · Ctrl+D deselect
+        </span>
       )}
       {tool === 'marquee' && (
-        <span className="options-hint">Drag on canvas · Ctrl+D deselect · Delete clears pixels</span>
+        <span className="options-hint">Drag · Delete clears pixels · Esc / Ctrl+D deselect</span>
       )}
       {tool === 'lasso' && <span className="options-hint">Drag a freeform selection</span>}
       {tool === 'polylasso' && (

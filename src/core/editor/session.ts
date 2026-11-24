@@ -281,21 +281,21 @@ export class EditorSession {
   }
 
   /**
-   * Photoshop-like Delete:
-   * - With an active marquee/lasso → clear those pixels on the active raster/image layer
-   * - Otherwise delete the selected (active) layer
+   * Photoshop-like Delete / Backspace:
+   * - With an active marquee/lasso → clear those pixels on the active unlocked paint layer
+   * - Without a selection → no-op (layer delete is Layers panel / menu only)
    */
   async deleteSelectionOrLayer(): Promise<void> {
-    const active = this.active()
-    if (!active) return
-    const doc = active.history.document
     if (this.selection && this.selection.width > 0 && this.selection.height > 0) {
+      const doc = this.getDocument()
+      const layer = doc?.layers.find((l) => l.id === doc.activeLayerId)
+      if (layer?.locked) {
+        this.status = 'Layer is locked'
+        this.emit()
+        return
+      }
       await this.clearSelectionPixels()
       return
-    }
-    if (doc.activeLayerId) {
-      this.deleteLayer(doc.activeLayerId)
-      this.status = 'Deleted layer'
     }
   }
 
@@ -502,20 +502,34 @@ export class EditorSession {
   }
 
   /**
-   * Resolve paint target for a stroke. Existing unlocked raster is reused.
-   * Otherwise prepares a new raster layer that is NOT in the document yet —
-   * commitRasterStroke folds creation + pixels into one undo step.
+   * Resolve paint target for a stroke (Photoshop rules):
+   * - Paint active unlocked raster/image (image promotes to raster on commit)
+   * - Rasterize unlocked text/shape in place
+   * - Locked / hidden → refuse (null); never spawn a silent sibling layer
+   * - No active layer → deferred new raster folded into the stroke undo step
    */
   async prepareRasterStrokeTarget(): Promise<{
     layer: RasterLayer
     isNewLayer: boolean
     sourceUrl: string | null
-  }> {
+    promoteFromImage?: boolean
+  } | null> {
     const active = this.ensureActive()
     const doc = active.history.document
     const current = doc.layers.find((l) => l.id === doc.activeLayerId)
 
-    if (current?.kind === 'raster' && !current.locked) {
+    if (current?.locked) {
+      this.status = 'Layer is locked'
+      this.emit()
+      return null
+    }
+    if (current && !current.visible) {
+      this.status = 'Layer is hidden'
+      this.emit()
+      return null
+    }
+
+    if (current?.kind === 'raster') {
       return {
         layer: current,
         isNewLayer: false,
@@ -523,7 +537,28 @@ export class EditorSession {
       }
     }
 
-    if (current && (current.kind === 'text' || current.kind === 'shape') && !current.locked) {
+    if (current?.kind === 'image') {
+      const asRaster = createRasterLayer({
+        name: current.name,
+        assetId: current.assetId,
+        width: current.naturalWidth,
+        height: current.naturalHeight
+      })
+      asRaster.id = current.id
+      asRaster.visible = current.visible
+      asRaster.locked = current.locked
+      asRaster.opacity = current.opacity
+      asRaster.blendMode = current.blendMode
+      asRaster.transform = { ...current.transform }
+      return {
+        layer: asRaster,
+        isNewLayer: false,
+        sourceUrl: active.assetUrls[current.assetId] ?? null,
+        promoteFromImage: true
+      }
+    }
+
+    if (current && (current.kind === 'text' || current.kind === 'shape')) {
       await this.rasterizeLayer(current.id)
       const after = this.getDocument()?.layers.find((l) => l.id === current.id)
       if (after?.kind === 'raster') {
@@ -535,15 +570,21 @@ export class EditorSession {
       }
     }
 
-    // Deferred new layer — registered only when the stroke commits.
-    const assetId = createId('asset')
-    const layer = createRasterLayer({
-      name: 'Layer',
-      assetId,
-      width: doc.width,
-      height: doc.height
-    })
-    return { layer, isNewLayer: true, sourceUrl: null }
+    // No active paint layer — deferred blank layer created with first stroke.
+    if (!current) {
+      const assetId = createId('asset')
+      const layer = createRasterLayer({
+        name: 'Layer',
+        assetId,
+        width: doc.width,
+        height: doc.height
+      })
+      return { layer, isNewLayer: true, sourceUrl: null }
+    }
+
+    this.status = 'Cannot paint on this layer'
+    this.emit()
+    return null
   }
 
   /** Layers panel "+" — explicit new blank layer (its own undo step). */
@@ -575,6 +616,7 @@ export class EditorSession {
     isNewLayer: boolean
     bytes: Uint8Array
     label: string
+    promoteFromImage?: boolean
   }): { layerId: string; assetId: string; url: string } {
     const active = this.ensureActive()
     const assetId = params.layer.assetId
@@ -605,6 +647,16 @@ export class EditorSession {
         )
       }
       active.history.commit(params.label, (d) => addLayer(d, params.layer), { assets: deltas })
+    } else if (params.promoteFromImage) {
+      active.history.commit(
+        params.label,
+        (d) => ({
+          ...d,
+          layers: d.layers.map((l) => (l.id === params.layer.id ? { ...params.layer } : l)),
+          updatedAt: new Date().toISOString()
+        }),
+        { assets: deltas }
+      )
     } else {
       active.history.commit(params.label, (d) => d, { assets: deltas })
     }
@@ -721,21 +773,31 @@ export class EditorSession {
     if (!active) return null
     const doc = active.history.document
     const current = doc.layers.find((l) => l.id === doc.activeLayerId)
-    if (current?.kind === 'raster' && !current.locked) {
+    if (current?.locked) {
+      this.status = 'Layer is locked'
+      this.emit()
+      return null
+    }
+    if (current && !current.visible) {
+      this.status = 'Layer is hidden'
+      this.emit()
+      return null
+    }
+    if (current?.kind === 'raster') {
       return {
         layer: current,
         url: active.assetUrls[current.assetId] ?? null,
         isNewLayer: false
       }
     }
-    if (current?.kind === 'image' && !current.locked) {
+    if (current?.kind === 'image') {
       return {
         layer: current,
         url: active.assetUrls[current.assetId] ?? null,
         isNewLayer: false
       }
     }
-    if (current && (current.kind === 'text' || current.kind === 'shape') && !current.locked) {
+    if (current && (current.kind === 'text' || current.kind === 'shape')) {
       await this.rasterizeLayer(current.id)
       const after = this.getDocument()?.layers.find((l) => l.id === current.id)
       if (after?.kind === 'raster') {
@@ -747,6 +809,7 @@ export class EditorSession {
       }
     }
     const target = await this.prepareRasterStrokeTarget()
+    if (!target) return null
     return {
       layer: target.layer,
       url: target.sourceUrl,
@@ -938,6 +1001,12 @@ export class EditorSession {
     )
   }
 
+  /** Live opacity while dragging the slider — no history entry. */
+  previewOpacity(layerId: string, opacity: number): void {
+    this.preview((d) => setLayerOpacity(d, layerId, opacity), true)
+  }
+
+  /** Commit opacity once (e.g. slider pointerup / change). */
   setOpacity(layerId: string, opacity: number): void {
     this.commit('Layer opacity', (d) => setLayerOpacity(d, layerId, opacity))
   }

@@ -7,14 +7,20 @@ import {
   IText,
   Path,
   Pattern,
-  PencilBrush,
   Point,
   Rect,
   Shadow,
   type TPointerEventInfo
 } from 'fabric'
 import type { EditorSession } from '../editor/session'
-import type { AtmpsDocument, BlendMode, Layer, MarqueeSelection, ToolId } from '@shared/types'
+import type {
+  AtmpsDocument,
+  BlendMode,
+  Layer,
+  MarqueeSelection,
+  RasterLayer,
+  ToolId
+} from '@shared/types'
 import {
   applyLinearGradient,
   cutSelection,
@@ -26,6 +32,13 @@ import {
   rgbaToHex,
   samplePixel
 } from './raster-ops'
+import {
+  bakeOverlayOntoLayer,
+  renderStrokePreview,
+  stampSegment,
+  type BrushStrokeParams,
+  type SelectionClip
+} from './stroke-engine'
 
 const LAYER_ID_KEY = 'atmpsLayerId'
 const DOC_FRAME_KEY = 'atmpsDocFrame'
@@ -52,8 +65,8 @@ const BLEND_TO_COMPOSITE: Record<BlendMode, GlobalCompositeOperation> = {
 
 /**
  * Fabric is a view. Document model remains source of truth.
- * Pointer-move transforms update Fabric objects only; document commits on mouse-up.
- * Brush strokes stay Fabric-only until path:created, then one asset commit (no full remount).
+ * Brush/eraser: stroke buffer on overlay → bake once to layer bitmap → one history delta.
+ * Never remount the Fabric scene for selection or asset-only paint updates.
  */
 export class FabricController {
   private canvas: Canvas
@@ -80,11 +93,36 @@ export class FabricController {
   private brushCursor: Circle | null = null
   private antsOffset = 0
   private antsRaf = 0
+  private activeStroke: {
+    overlay: HTMLCanvasElement
+    overlayCtx: CanvasRenderingContext2D
+    preview: HTMLCanvasElement
+    baseImage: HTMLImageElement | null
+    layer: RasterLayer
+    isNewLayer: boolean
+    promoteFromImage: boolean
+    params: BrushStrokeParams
+    lastStamped: { x: number; y: number } | null
+    clip: SelectionClip | null
+    sourceUrl: string | null
+  } | null = null
   private selectionFloat: {
     imageData: ImageData
     origin: MarqueeSelection
     fabricImg: FabricImage
     startDoc: { x: number; y: number }
+    layerId: string
+    baseData: ImageData
+    restoreUrl: string
+    layerMeta: {
+      id: string
+      width: number
+      height: number
+      transform: Layer['transform']
+      opacity: number
+      blendMode?: BlendMode
+      locked?: boolean
+    }
   } | null = null
 
   constructor(canvasEl: HTMLCanvasElement, session: EditorSession) {
@@ -156,89 +194,115 @@ export class FabricController {
     brushHardness = 100,
     brushFlow = 100
   ): void {
-    const alpha = Math.max(0.01, (brushOpacity / 100) * (brushFlow / 100))
-    const color = hexToRgba(brushColor, alpha)
-    const soft = Math.max(0, (100 - brushHardness) / 100) * (brushSize * 0.45)
+    // Mid-stroke: only nudge size/hardness for the *next* dab — never rebuild tool mode.
+    if (this.activeStroke && (tool === 'brush' || tool === 'eraser')) {
+      const rgb = hexToRgb(brushColor)
+      this.activeStroke.params = {
+        size: brushSize,
+        hardness: brushHardness,
+        opacity: brushOpacity,
+        flow: brushFlow,
+        color: rgb,
+        eraser: tool === 'eraser'
+      }
+      this.ensureBrushCursor(brushSize)
+      return
+    }
 
-    if (tool === 'brush') {
-      const brush = new PencilBrush(this.canvas)
-      brush.width = brushSize
-      brush.color = color
-      brush.shadow =
-        soft > 0.5
-          ? new Shadow({ color, blur: soft, offsetX: 0, offsetY: 0, affectStroke: true })
-          : null
-      this.canvas.isDrawingMode = true
-      this.canvas.freeDrawingBrush = brush
-      this.canvas.selection = false
-      this.canvas.defaultCursor = 'none'
-      ;(this.canvas as Canvas & { __atmpsEraser?: boolean }).__atmpsEraser = false
-      this.ensureBrushCursor(brushSize)
-    } else if (tool === 'eraser') {
-      const eraser = new PencilBrush(this.canvas)
-      eraser.width = brushSize
-      eraser.color = 'rgba(0,0,0,1)'
-      eraser.shadow =
-        soft > 0.5
-          ? new Shadow({
-              color: 'rgba(0,0,0,1)',
-              blur: soft,
-              offsetX: 0,
-              offsetY: 0,
-              affectStroke: true
-            })
-          : null
-      this.canvas.isDrawingMode = true
-      this.canvas.freeDrawingBrush = eraser
-      this.canvas.selection = false
-      this.canvas.defaultCursor = 'none'
-      ;(this.canvas as Canvas & { __atmpsEraser?: boolean }).__atmpsEraser = true
-      this.ensureBrushCursor(brushSize)
-    } else if (tool === 'clone') {
-      this.canvas.isDrawingMode = false
-      ;(this.canvas as Canvas & { __atmpsEraser?: boolean }).__atmpsEraser = false
+    this.canvas.isDrawingMode = false
+    ;(this.canvas as Canvas & { __atmpsEraser?: boolean }).__atmpsEraser = tool === 'eraser'
+
+    if (tool === 'brush' || tool === 'eraser' || tool === 'clone') {
       this.canvas.selection = false
       this.canvas.defaultCursor = 'none'
       this.ensureBrushCursor(brushSize)
-    } else {
-      this.canvas.isDrawingMode = false
-      ;(this.canvas as Canvas & { __atmpsEraser?: boolean }).__atmpsEraser = false
-      this.hideBrushCursor()
-      this.canvas.selection = tool === 'move'
-      this.canvas.defaultCursor =
-        tool === 'hand'
-          ? 'grab'
-          : tool === 'zoom'
-            ? 'zoom-in'
-            : tool === 'marquee' ||
-                tool === 'lasso' ||
-                tool === 'polylasso' ||
-                tool === 'crop' ||
-                tool === 'eyedropper'
-              ? 'crosshair'
-              : tool === 'bucket' || tool === 'gradient'
-                ? 'cell'
-                : 'default'
       this.canvas.forEachObject((obj) => {
         const id = obj.get(LAYER_ID_KEY) as string | undefined
-        if (
-          id === '__background__' ||
-          id === DOC_FRAME_KEY ||
-          id === MARQUEE_KEY ||
-          id === LASSO_KEY ||
-          id === CROP_KEY ||
-          id === BRUSH_CURSOR_KEY ||
-          id === FLOAT_KEY
-        ) {
+        if (!id || id.startsWith('__') || id === DOC_FRAME_KEY) {
           obj.selectable = false
           obj.evented = false
           return
         }
-        const selectable = tool === 'move'
-        obj.selectable = selectable
-        obj.evented = selectable || tool === 'text'
+        obj.selectable = false
+        obj.evented = false
       })
+      return
     }
+
+    this.hideBrushCursor()
+    this.canvas.selection = tool === 'move'
+    this.canvas.defaultCursor =
+      tool === 'hand'
+        ? 'grab'
+        : tool === 'zoom'
+          ? 'zoom-in'
+          : tool === 'marquee' ||
+              tool === 'lasso' ||
+              tool === 'polylasso' ||
+              tool === 'crop' ||
+              tool === 'eyedropper'
+            ? 'crosshair'
+            : tool === 'bucket' || tool === 'gradient'
+              ? 'cell'
+              : 'default'
+    this.canvas.forEachObject((obj) => {
+      const id = obj.get(LAYER_ID_KEY) as string | undefined
+      if (
+        id === '__background__' ||
+        id === DOC_FRAME_KEY ||
+        id === MARQUEE_KEY ||
+        id === LASSO_KEY ||
+        id === CROP_KEY ||
+        id === BRUSH_CURSOR_KEY ||
+        id === FLOAT_KEY
+      ) {
+        obj.selectable = false
+        obj.evented = false
+        return
+      }
+      const selectable = tool === 'move'
+      obj.selectable = selectable
+      obj.evented = selectable || tool === 'text'
+    })
+  }
+
+  /** Selection overlay only — never clears the Fabric scene. */
+  syncSelectionOverlay(): void {
+    this.drawMarqueeOverlay()
+    this.canvas.requestRenderAll()
+  }
+
+  /** Live opacity / blend without remount. */
+  applyLayerVisuals(
+    layerId: string,
+    visuals: { opacity?: number; blendMode?: BlendMode }
+  ): void {
+    const obj = this.canvas.getObjects().find((o) => o.get(LAYER_ID_KEY) === layerId)
+    if (!obj) return
+    if (visuals.opacity !== undefined) obj.set({ opacity: visuals.opacity })
+    if (visuals.blendMode !== undefined) {
+      obj.set({ globalCompositeOperation: BLEND_TO_COMPOSITE[visuals.blendMode] })
+    }
+    this.canvas.requestRenderAll()
+  }
+
+  /**
+   * Cancel an in-progress selection move (Esc): restore cut hole, drop float.
+   * Returns true if a float was cancelled.
+   */
+  async cancelSelectionFloat(): Promise<boolean> {
+    const float = this.selectionFloat
+    if (!float) return false
+    this.canvas.remove(float.fabricImg)
+    await this.upsertRasterLayerImage(float.layerMeta, float.restoreUrl)
+    this.selectionFloat = null
+    this.drawMarqueeOverlay()
+    this.canvas.requestRenderAll()
+    return true
+  }
+
+  isStrokeActive(): boolean {
+    return this.activeStroke !== null
   }
 
   setZoom(zoom: number, center?: { x: number; y: number }): void {
@@ -299,6 +363,7 @@ export class FabricController {
    * Used for undo/redo of brush strokes and other asset-only updates.
    */
   async refreshAssetUrls(doc: AtmpsDocument, assetUrls: Record<string, string>): Promise<void> {
+    if (this.activeStroke) return
     if (this.ignoreNextExternalSync) {
       this.ignoreNextExternalSync = false
       return
@@ -327,12 +392,17 @@ export class FabricController {
 
   async syncFromDocument(doc: AtmpsDocument, assetUrls: Record<string, string>): Promise<void> {
     if (this.dragLayerId) return
+    if (this.activeStroke) return
     if (this.ignoreNextExternalSync) {
       this.ignoreNextExternalSync = false
       return
     }
     this.syncing = true
     try {
+      if (this.selectionFloat) {
+        this.canvas.remove(this.selectionFloat.fabricImg)
+        this.selectionFloat = null
+      }
       const keepSelection = this.canvas.getActiveObject()?.get(LAYER_ID_KEY) as string | undefined
       this.canvas.clear()
       this.brushCursor = null
@@ -418,16 +488,21 @@ export class FabricController {
 
   private startMarchingAnts(): void {
     const tick = () => {
-      this.antsOffset = (this.antsOffset + 0.35) % 16
+      this.antsOffset = (this.antsOffset + 0.4) % 16
       const sel = this.session.getSnapshot().selection
-      if (sel && this.marqueeRect) {
-        this.marqueeRect.set({ strokeDashOffset: -this.antsOffset })
-        this.canvas.requestRenderAll()
+      if (!sel) {
+        this.antsRaf = requestAnimationFrame(tick)
+        return
       }
-      if (sel?.points && this.lassoPath) {
-        this.lassoPath.set({ strokeDashOffset: -this.antsOffset })
-        this.canvas.requestRenderAll()
+      // Animate both white and black underlay dashes (Photoshop dual-ant look).
+      for (const obj of this.canvas.getObjects()) {
+        const key = obj.get(LAYER_ID_KEY) as string | undefined
+        if (key !== MARQUEE_KEY && key !== LASSO_KEY) continue
+        const stroke = obj.stroke
+        const offset = stroke === '#000000' || stroke === '#000' ? 4 - this.antsOffset : -this.antsOffset
+        obj.set({ strokeDashOffset: offset })
       }
+      this.canvas.requestRenderAll()
       this.antsRaf = requestAnimationFrame(tick)
     }
     this.antsRaf = requestAnimationFrame(tick)
@@ -858,6 +933,11 @@ export class FabricController {
       return
     }
 
+    if (tool === 'brush' || tool === 'eraser') {
+      await this.beginStroke(docPt, tool === 'eraser')
+      return
+    }
+
     if (tool === 'move') {
       const sel = this.session.getSnapshot().selection
       if (sel && pointInSelection(docPt, sel)) {
@@ -874,6 +954,11 @@ export class FabricController {
     const snap = this.session.getSnapshot()
     if (snap.tool === 'brush' || snap.tool === 'eraser' || snap.tool === 'clone') {
       this.updateBrushCursor(docPt)
+    }
+
+    if (this.activeStroke) {
+      this.continueStroke(docPt)
+      return
     }
 
     if (this.panLast) {
@@ -963,6 +1048,12 @@ export class FabricController {
     this.zoomDragStart = null
     const point = pointerClient(opt.e)
     const docPt = point ? this.clientToDocument(point.x, point.y) : null
+
+    if (this.activeStroke) {
+      if (docPt) this.continueStroke(docPt)
+      await this.endStroke()
+      return
+    }
 
     if (this.selectionFloat && docPt) {
       await this.commitSelectionMove(docPt)
@@ -1218,6 +1309,154 @@ export class FabricController {
     }
   }
 
+  private async beginStroke(docPt: { x: number; y: number }, eraser: boolean): Promise<void> {
+    const doc = this.session.getDocument()
+    if (!doc || this.activeStroke) return
+
+    const target = await this.session.prepareRasterStrokeTarget()
+    if (!target) return
+
+    const layer = target.layer
+    const w = layer.width
+    const h = layer.height
+    const overlay = document.createElement('canvas')
+    overlay.width = w
+    overlay.height = h
+    const overlayCtx = overlay.getContext('2d', { willReadFrequently: true })
+    if (!overlayCtx) return
+
+    const preview = document.createElement('canvas')
+    preview.width = w
+    preview.height = h
+
+    let baseImage: HTMLImageElement | null = null
+    if (target.sourceUrl) {
+      try {
+        baseImage = await loadHtmlImage(target.sourceUrl)
+      } catch {
+        baseImage = null
+      }
+    }
+
+    const snap = this.session.getSnapshot()
+    const params: BrushStrokeParams = {
+      size: snap.brushSize,
+      hardness: snap.brushHardness,
+      opacity: snap.brushOpacity,
+      flow: snap.brushFlow,
+      color: hexToRgb(snap.brushColor),
+      eraser
+    }
+    const clip: SelectionClip | null =
+      snap.selection && snap.selection.width > 0 && snap.selection.height > 0
+        ? {
+            x: snap.selection.x,
+            y: snap.selection.y,
+            width: snap.selection.width,
+            height: snap.selection.height,
+            points: snap.selection.points
+          }
+        : null
+
+    // Map doc point → layer bitmap space (inverse of layer transform).
+    const local = docToLayerPoint(docPt, layer)
+    this.activeStroke = {
+      overlay,
+      overlayCtx,
+      preview,
+      baseImage,
+      layer,
+      isNewLayer: target.isNewLayer,
+      promoteFromImage: Boolean(target.promoteFromImage),
+      params,
+      lastStamped: null,
+      clip: clip
+        ? {
+            ...clip,
+            x: clip.x - layer.transform.x,
+            y: clip.y - layer.transform.y,
+            points: clip.points?.map((p) => ({
+              x: p.x - layer.transform.x,
+              y: p.y - layer.transform.y
+            }))
+          }
+        : null,
+      sourceUrl: target.sourceUrl
+    }
+    this.activeStroke.lastStamped = stampSegment(
+      overlayCtx,
+      local,
+      local,
+      params,
+      this.activeStroke.clip,
+      null
+    )
+    await this.refreshStrokePreview()
+  }
+
+  private continueStroke(docPt: { x: number; y: number }): void {
+    const stroke = this.activeStroke
+    if (!stroke) return
+    const local = docToLayerPoint(docPt, stroke.layer)
+    const from = stroke.lastStamped ?? local
+    stroke.lastStamped = stampSegment(
+      stroke.overlayCtx,
+      from,
+      local,
+      stroke.params,
+      stroke.clip,
+      stroke.lastStamped
+    )
+    void this.refreshStrokePreview()
+  }
+
+  private async refreshStrokePreview(): Promise<void> {
+    const stroke = this.activeStroke
+    if (!stroke) return
+    renderStrokePreview(
+      stroke.preview,
+      stroke.baseImage,
+      stroke.overlay,
+      stroke.params.opacity,
+      stroke.params.eraser
+    )
+    const url = stroke.preview.toDataURL('image/png')
+    await this.upsertRasterLayerImage(stroke.layer, url)
+    if (this.brushCursor) this.canvas.bringObjectToFront(this.brushCursor)
+  }
+
+  private async endStroke(): Promise<void> {
+    const stroke = this.activeStroke
+    if (!stroke) return
+    this.activeStroke = null
+
+    const w = stroke.layer.width
+    const h = stroke.layer.height
+    const layerData = stroke.sourceUrl
+      ? await loadImageData(stroke.sourceUrl, w, h)
+      : new ImageData(w, h)
+
+    bakeOverlayOntoLayer(
+      layerData,
+      stroke.overlay,
+      stroke.params.opacity,
+      stroke.params.eraser
+    )
+    const bytes = await imageDataToPng(layerData)
+
+    this.ignoreNextExternalSync = true
+    const committed = this.session.commitRasterStroke({
+      layer: stroke.layer,
+      isNewLayer: stroke.isNewLayer,
+      bytes,
+      label: stroke.params.eraser ? 'Eraser stroke' : 'Brush stroke',
+      promoteFromImage: stroke.promoteFromImage
+    })
+    this.onRasterStrokeEnd?.(committed.layerId, bytes)
+    await this.upsertRasterLayerImage(stroke.layer, committed.url)
+    if (this.brushCursor) this.canvas.bringObjectToFront(this.brushCursor)
+  }
+
   private async beginSelectionMove(
     docPt: { x: number; y: number },
     sel: MarqueeSelection
@@ -1228,27 +1467,26 @@ export class FabricController {
     const width = layer.kind === 'image' ? layer.naturalWidth : layer.width
     const height = layer.kind === 'image' ? layer.naturalHeight : layer.height
     if (!prepared.url) return
+
+    const restoreUrl = prepared.url
     const data = await loadImageData(prepared.url, width, height)
     const cut = cutSelection(data, sel, sel.points)
-    // Write cleared layer back temporarily for visual (committed on mouse up)
+
+    // Visual hole only — session assets untouched until mouseup commit or Esc cancel.
     const clearedBytes = await imageDataToPng(data)
     const clearedUrl = URL.createObjectURL(
       new Blob([clearedBytes.buffer as ArrayBuffer], { type: 'image/png' })
     )
-    await this.upsertRasterLayerImage(
-      layer.kind === 'raster'
-        ? layer
-        : {
-            id: layer.id,
-            width: layer.naturalWidth,
-            height: layer.naturalHeight,
-            transform: layer.transform,
-            opacity: layer.opacity,
-            blendMode: layer.blendMode,
-            locked: layer.locked
-          },
-      clearedUrl
-    )
+    const layerMeta = {
+      id: layer.id,
+      width,
+      height,
+      transform: layer.transform,
+      opacity: layer.opacity,
+      blendMode: layer.blendMode,
+      locked: layer.locked
+    }
+    await this.upsertRasterLayerImage(layerMeta, clearedUrl)
 
     const floatCanvas = document.createElement('canvas')
     floatCanvas.width = cut.width
@@ -1268,24 +1506,18 @@ export class FabricController {
       imageData: cut,
       origin: { ...sel, points: sel.points ? sel.points.map((p) => ({ ...p })) : undefined },
       fabricImg,
-      startDoc: docPt
+      startDoc: docPt,
+      layerId: layer.id,
+      baseData: data,
+      restoreUrl,
+      layerMeta
     }
-    // Keep cleared bytes around via float state; final commit on mouseup
-    ;(this.selectionFloat as typeof this.selectionFloat & { clearedBytes?: Uint8Array }).clearedBytes =
-      clearedBytes
-    ;(this.selectionFloat as typeof this.selectionFloat & { layerId?: string }).layerId = layer.id
-    ;(this.selectionFloat as typeof this.selectionFloat & { baseData?: ImageData }).baseData = data
   }
 
   private async commitSelectionMove(docPt: { x: number; y: number }): Promise<void> {
-    const float = this.selectionFloat as typeof this.selectionFloat & {
-      baseData?: ImageData
-      layerId?: string
-    }
-    if (!float?.baseData || !float.layerId) {
-      this.selectionFloat = null
-      return
-    }
+    const float = this.selectionFloat
+    if (!float) return
+
     const dx = docPt.x - float.startDoc.x
     const dy = docPt.y - float.startDoc.y
     const destX = float.origin.x + dx
@@ -1293,11 +1525,18 @@ export class FabricController {
     pasteImageData(float.baseData, float.imageData, destX, destY)
     const bytes = await imageDataToPng(float.baseData)
     this.canvas.remove(float.fabricImg)
+
+    const layerMeta = float.layerMeta
+    const layerId = float.layerId
     this.selectionFloat = null
 
     this.ignoreNextExternalSync = true
-    const layer = this.session.getDocument()?.layers.find((l) => l.id === float.layerId)
-    if (!layer || (layer.kind !== 'raster' && layer.kind !== 'image')) return
+    const layer = this.session.getDocument()?.layers.find((l) => l.id === layerId)
+    if (!layer || (layer.kind !== 'raster' && layer.kind !== 'image')) {
+      // Restore visual if commit target vanished
+      await this.upsertRasterLayerImage(layerMeta, float.restoreUrl)
+      return
+    }
 
     if (layer.kind === 'raster') {
       const committed = this.session.commitRasterStroke({
@@ -1309,24 +1548,13 @@ export class FabricController {
       await this.upsertRasterLayerImage(layer, committed.url)
     } else {
       const result = await this.session.applyRasterPixelEdit('Move selection', (data) => {
-        // already mutated via float.baseData path — re-apply from bytes
-        const ctx = document.createElement('canvas').getContext('2d')
-        void ctx
-        data.data.set((float.baseData as ImageData).data)
+        data.data.set(float.baseData.data)
       })
       if (result) {
-        await this.upsertRasterLayerImage(
-          {
-            id: layer.id,
-            width: layer.naturalWidth,
-            height: layer.naturalHeight,
-            transform: layer.transform,
-            opacity: layer.opacity,
-            blendMode: layer.blendMode,
-            locked: layer.locked
-          },
-          result.url
-        )
+        await this.upsertRasterLayerImage(layerMeta, result.url)
+      } else {
+        await this.upsertRasterLayerImage(layerMeta, float.restoreUrl)
+        return
       }
     }
 
@@ -1340,101 +1568,10 @@ export class FabricController {
     this.session.setSelection(newSel)
   }
 
+  /** Legacy Fabric free-draw path — unused; brush uses overlay stroke buffer. */
   private async handlePathCreated(opt: { path?: FabricObject }): Promise<void> {
     const path = opt.path
-    if (!path) return
-
-    const doc = this.session.getDocument()
-    if (!doc) {
-      this.canvas.remove(path)
-      return
-    }
-
-    const isEraser = Boolean((this.canvas as Canvas & { __atmpsEraser?: boolean }).__atmpsEraser)
-    const snap = this.session.getSnapshot()
-
-    const target = await this.session.prepareRasterStrokeTarget()
-    const layer = target.layer
-
-    const bakeCanvas = document.createElement('canvas')
-    bakeCanvas.width = doc.width
-    bakeCanvas.height = doc.height
-    const ctx = bakeCanvas.getContext('2d')
-    if (!ctx) {
-      this.canvas.remove(path)
-      return
-    }
-
-    if (target.sourceUrl) {
-      await new Promise<void>((resolve) => {
-        const img = new Image()
-        img.onload = () => {
-          ctx.drawImage(img, 0, 0, doc.width, doc.height)
-          resolve()
-        }
-        img.onerror = () => resolve()
-        img.src = target.sourceUrl!
-      })
-    }
-
-    // Clip stroke to selection if present
-    if (snap.selection && snap.selection.width > 0 && snap.selection.height > 0) {
-      ctx.save()
-      const sel = snap.selection
-      if (sel.points && sel.points.length >= 3) {
-        ctx.beginPath()
-        sel.points.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)))
-        ctx.closePath()
-        ctx.clip()
-      } else {
-        ctx.beginPath()
-        ctx.rect(sel.x, sel.y, sel.width, sel.height)
-        ctx.clip()
-      }
-    }
-
-    const pathCanvas = document.createElement('canvas')
-    pathCanvas.width = doc.width
-    pathCanvas.height = doc.height
-    const temp = new Canvas(pathCanvas, { width: doc.width, height: doc.height })
-    const alpha = (snap.brushOpacity / 100) * (snap.brushFlow / 100)
-    path.set({
-      stroke: isEraser ? 'rgba(0,0,0,1)' : hexToRgba(snap.brushColor, alpha),
-      fill: '',
-      globalCompositeOperation: 'source-over'
-    })
-    temp.add(path)
-    temp.renderAll()
-
-    if (isEraser) {
-      ctx.globalCompositeOperation = 'destination-out'
-    } else {
-      ctx.globalCompositeOperation = 'source-over'
-    }
-    ctx.drawImage(pathCanvas, 0, 0)
-    ctx.globalCompositeOperation = 'source-over'
-    if (snap.selection) ctx.restore()
-    temp.dispose()
-
-    const blob = await new Promise<Blob | null>((resolve) =>
-      bakeCanvas.toBlob((b) => resolve(b), 'image/png')
-    )
-    this.canvas.remove(path)
-    if (!blob) return
-    const buf = new Uint8Array(await blob.arrayBuffer())
-
-    // Set ignore BEFORE commit/emit so React sync cannot clear mid-update.
-    this.ignoreNextExternalSync = true
-    const committed = this.session.commitRasterStroke({
-      layer,
-      isNewLayer: target.isNewLayer,
-      bytes: buf,
-      label: isEraser ? 'Eraser stroke' : 'Brush stroke'
-    })
-    this.onRasterStrokeEnd?.(committed.layerId, buf)
-
-    await this.upsertRasterLayerImage(layer, committed.url)
-    if (this.brushCursor) this.canvas.bringObjectToFront(this.brushCursor)
+    if (path) this.canvas.remove(path)
   }
 
   /**
@@ -1588,13 +1725,45 @@ function pointerClient(e: Event): { x: number; y: number } | null {
   return null
 }
 
-function hexToRgba(hex: string, alpha: number): string {
+function hexToRgb(hex: string): [number, number, number] {
   const h = hex.replace('#', '')
   const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h
-  const r = parseInt(full.slice(0, 2), 16) || 0
-  const g = parseInt(full.slice(2, 4), 16) || 0
-  const b = parseInt(full.slice(4, 6), 16) || 0
-  return `rgba(${r},${g},${b},${alpha})`
+  return [
+    parseInt(full.slice(0, 2), 16) || 0,
+    parseInt(full.slice(2, 4), 16) || 0,
+    parseInt(full.slice(4, 6), 16) || 0
+  ]
+}
+
+/** Document space → layer bitmap space (translation-only; scale/rotate identity for paint layers). */
+function docToLayerPoint(
+  pt: { x: number; y: number },
+  layer: { transform: Layer['transform']; width: number; height: number }
+): { x: number; y: number } {
+  const t = layer.transform
+  let x = pt.x - t.x
+  let y = pt.y - t.y
+  if (t.rotation !== 0) {
+    const rad = (-t.rotation * Math.PI) / 180
+    const cos = Math.cos(rad)
+    const sin = Math.sin(rad)
+    const rx = x * cos - y * sin
+    const ry = x * sin + y * cos
+    x = rx
+    y = ry
+  }
+  if (t.scaleX !== 0) x /= t.scaleX
+  if (t.scaleY !== 0) y /= t.scaleY
+  return { x, y }
+}
+
+function loadHtmlImage(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = () => reject(new Error('Image load failed'))
+    img.src = url
+  })
 }
 
 function drawImage(

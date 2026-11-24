@@ -23,6 +23,8 @@ export function CanvasViewport({
   const lastDocId = useRef<string | null>(null)
   const lastStructureSig = useRef<string>('')
   const lastUrlsSig = useRef<string>('')
+  const lastVisualsSig = useRef<string>('')
+  const lastSelectionSig = useRef<string>('')
 
   useEffect(() => {
     const canvasEl = canvasRef.current
@@ -50,6 +52,7 @@ export function CanvasViewport({
   useEffect(() => {
     const controller = controllerRef.current
     if (!controller) return
+    // Mid-stroke size/hardness nudges update next dab only (controller guards rebuild).
     controller.setTool(
       snapshot.tool,
       snapshot.brushSize,
@@ -74,16 +77,43 @@ export function CanvasViewport({
     controller.setZoom(snapshot.zoom)
   }, [snapshot.zoom, controllerRef])
 
+  // Selection overlay only — never canvas.clear()
+  useEffect(() => {
+    const controller = controllerRef.current
+    if (!controller || !snapshot.document) return
+    const sig = JSON.stringify(snapshot.selection)
+    if (sig === lastSelectionSig.current) return
+    lastSelectionSig.current = sig
+    controller.syncSelectionOverlay()
+  }, [snapshot.selection, snapshot.document, controllerRef])
+
+  // Opacity / blend live without remount
+  useEffect(() => {
+    const controller = controllerRef.current
+    const doc = snapshot.document
+    if (!controller || !doc) return
+    const visualsSig = JSON.stringify(
+      doc.layers.map((l) => ({ id: l.id, opacity: l.opacity, blendMode: l.blendMode }))
+    )
+    if (visualsSig === lastVisualsSig.current) return
+    lastVisualsSig.current = visualsSig
+    for (const layer of doc.layers) {
+      controller.applyLayerVisuals(layer.id, {
+        opacity: layer.opacity,
+        blendMode: layer.blendMode
+      })
+    }
+  }, [snapshot.document, controllerRef])
+
   useEffect(() => {
     const controller = controllerRef.current
     const doc = snapshot.document
     if (!controller || !doc) return
 
-    // Structure = layers/selection/doc identity. Asset URL changes alone must not
-    // force a full canvas.clear() (that caused paint flicker).
+    // Structure excludes selection / opacity / blend — those are patched in place.
+    // Omit updatedAt / opacity / blend / selection — those must not remount Fabric.
     const structureSig = JSON.stringify({
       id: doc.id,
-      updatedAt: doc.updatedAt,
       active: doc.activeLayerId,
       layers: doc.layers.map((l) => ({
         id: l.id,
@@ -91,21 +121,15 @@ export function CanvasViewport({
         name: l.name,
         visible: l.visible,
         locked: l.locked,
-        opacity: l.opacity,
-        blendMode: l.blendMode,
         transform: l.transform,
-        // kind-specific non-pixel fields
         ...(l.kind === 'shape'
           ? { shape: l.shape, width: l.width, height: l.height, fill: l.fill }
           : {}),
         ...(l.kind === 'text'
           ? { text: l.text, fontSize: l.fontSize, fill: l.fill, fontWeight: l.fontWeight }
           : {}),
-        ...(l.kind === 'image' || l.kind === 'raster'
-          ? { assetId: l.kind === 'image' || l.kind === 'raster' ? l.assetId : undefined }
-          : {})
-      })),
-      selection: snapshot.selection
+        ...(l.kind === 'image' || l.kind === 'raster' ? { assetId: l.assetId } : {})
+      }))
     })
     const urlsSig = JSON.stringify(snapshot.assetUrls)
 
@@ -120,18 +144,21 @@ export function CanvasViewport({
     lastUrlsSig.current = urlsSig
 
     if (!structureChanged && urlsChanged) {
-      // Asset-only change (brush undo/redo, etc.) — patch images, do not clear canvas.
       void controller.refreshAssetUrls(doc, snapshot.assetUrls)
       return
     }
 
     void controller.syncFromDocument(doc, snapshot.assetUrls).then(() => {
+      lastSelectionSig.current = JSON.stringify(snapshot.selection)
+      lastVisualsSig.current = JSON.stringify(
+        doc.layers.map((l) => ({ id: l.id, opacity: l.opacity, blendMode: l.blendMode }))
+      )
       if (isNewDoc) {
         const z = controller.zoomToFit(doc.width, doc.height)
         session.setZoom(z)
       }
     })
-  }, [snapshot.document, snapshot.assetUrls, snapshot.selection, controllerRef, session])
+  }, [snapshot.document, snapshot.assetUrls, controllerRef, session])
 
   const ruler = snapshot.showRulers && snapshot.document
 
