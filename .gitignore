@@ -9,3 +9,8 @@ Thumbs.db
 .env.*
 coverage/
 *.local
+
+artifacts/
+dist-polish/
+.tmp-eb-portable.json
+
